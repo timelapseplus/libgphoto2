@@ -1,7 +1,7 @@
 /* ptp.h
  *
  * Copyright (C) 2001 Mariusz Woloszyn <emsi@ipartners.pl>
- * Copyright (C) 2003-2014 Marcus Meissner <marcus@jet.franken.de>
+ * Copyright (C) 2003-2017 Marcus Meissner <marcus@jet.franken.de>
  * Copyright (C) 2006-2008 Linus Walleij <triad@df.lth.se>
  *
  * This library is free software; you can redistribute it and/or
@@ -172,6 +172,7 @@ typedef struct _PTPIPHeader PTPIPHeader;
 /* not from standards papers, but from traces: */
 #define PTP_VENDOR_SONY			0x00000011 /* observed in the A900 */
 #define PTP_VENDOR_SAMSUNG		0x0000001a /* observed in the Samsung NX1000 */
+#define PTP_VENDOR_PARROT		0x0000001b /* observed in the Parrot Sequoia */
 /* Vendor extension ID used for MTP (occasionaly, usualy 6 is used) */
 #define PTP_VENDOR_MTP			0xffffffff  
 
@@ -279,6 +280,7 @@ typedef struct _PTPIPHeader PTPIPHeader;
 #define PTP_OC_CANON_902C			0x902C
 #define PTP_OC_CANON_GetDirectory		0x902D
 #define PTP_OC_CANON_902E			0x902E
+#define PTP_OC_CANON_902F			0x902F	/* used during camera init */
 
 #define PTP_OC_CANON_SetPairingInfo		0x9030
 #define PTP_OC_CANON_GetPairingInfo		0x9031
@@ -407,6 +409,7 @@ typedef struct _PTPIPHeader PTPIPHeader;
 #define PTP_OC_CANON_EOS_SetCTGInfo		0x913C
 #define PTP_OC_CANON_EOS_SetRequestOLCInfoGroup	0x913D
 #define PTP_OC_CANON_EOS_SetRequestRollingPitchingLevel	0x913E
+/* 3 args, 0x21201020, 0x110, 0x1000000 (potentially reverse order) */
 #define PTP_OC_CANON_EOS_GetCameraSupport	0x913F
 #define PTP_OC_CANON_EOS_SetRating		0x9140 /* 2 args */
 #define PTP_OC_CANON_EOS_RequestInnerDevelopStart	0x9141 /* 2 args: 1 type, 1 object? */
@@ -438,6 +441,8 @@ typedef struct _PTPIPHeader PTPIPHeader;
 #define PTP_OC_CANON_EOS_CancelTransfer2	0x91F1
 #define PTP_OC_CANON_EOS_FAPIMessageTX		0x91FE
 #define PTP_OC_CANON_EOS_FAPIMessageRX		0x91FF
+
+/* A1E8 ... also seen? is an error code? */
 
 /* Nikon extension Operation Codes */
 #define PTP_OC_NIKON_GetProfileAllData	0x9006
@@ -669,6 +674,22 @@ typedef struct _PTPIPHeader PTPIPHeader;
 #define PTP_OC_LEICA_CloseLESession			0x9006
 #define PTP_OC_LEICA_RequestObjectTransferReady		0x9007
 
+#define PTP_OC_PARROT_GetSunshineValues		0x9201
+#define PTP_OC_PARROT_GetTemperatureValues	0x9202
+#define PTP_OC_PARROT_GetAngleValues		0x9203
+#define PTP_OC_PARROT_GetGpsValues		0x9204
+#define PTP_OC_PARROT_GetGyroscopeValues	0x9205
+#define PTP_OC_PARROT_GetAccelerometerValues	0x9206
+#define PTP_OC_PARROT_GetMagnetometerValues	0x9207
+#define PTP_OC_PARROT_GetImuValues		0x9208
+#define PTP_OC_PARROT_GetStatusMask		0x9209
+#define PTP_OC_PARROT_EjectStorage		0x920A
+#define PTP_OC_PARROT_StartMagnetoCalib		0x9210
+#define PTP_OC_PARROT_StopMagnetoCalib		0x9211
+#define PTP_OC_PARROT_MagnetoCalibStatus	0x9212
+#define PTP_OC_PARROT_SendFirmwareUpdate	0x9213
+
+
 /* Proprietary vendor extension operations mask */
 #define PTP_OC_EXTENSION_MASK           0xF000
 #define PTP_OC_EXTENSION                0x9000
@@ -864,6 +885,10 @@ typedef struct _PTPIPHeader PTPIPHeader;
 #define PTP_EC_MTP_ObjectPropChanged		0xC801
 #define PTP_EC_MTP_ObjectPropDescChanged	0xC802
 #define PTP_EC_MTP_ObjectReferencesChanged	0xC803
+
+#define PTP_EC_PARROT_Status			0xC201
+#define PTP_EC_PARROT_MagnetoCalibrationStatus	0xC202
+
 
 /* constants for GetObjectHandles */
 #define PTP_GOH_ALL_STORAGE 0xffffffff
@@ -2124,6 +2149,32 @@ typedef struct _PTPCanonEOSDeviceInfo {
 
 #define PTP_DPC_RICOH_ShutterSpeed	0xD00F
 
+/* https://github.com/Parrot-Developers/sequoia-ptpy */
+#define PTP_DPC_PARROT_PhotoSensorEnableMask			0xD201
+#define PTP_DPC_PARROT_PhotoSensorsKeepOn			0xD202
+#define PTP_DPC_PARROT_MultispectralImageSize			0xD203
+#define PTP_DPC_PARROT_MainBitDepth				0xD204
+#define PTP_DPC_PARROT_MultispectralBitDepth			0xD205
+#define PTP_DPC_PARROT_HeatingEnable				0xD206
+#define PTP_DPC_PARROT_WifiStatus				0xD207
+#define PTP_DPC_PARROT_WifiSSID					0xD208
+#define PTP_DPC_PARROT_WifiEncryptionType			0xD209
+#define PTP_DPC_PARROT_WifiPassphrase				0xD20A
+#define PTP_DPC_PARROT_WifiChannel				0xD20B
+#define PTP_DPC_PARROT_Localization				0xD20C
+#define PTP_DPC_PARROT_WifiMode					0xD20D
+#define PTP_DPC_PARROT_AntiFlickeringFrequency			0xD210
+#define PTP_DPC_PARROT_DisplayOverlayMask			0xD211
+#define PTP_DPC_PARROT_GPSInterval				0xD212
+#define PTP_DPC_PARROT_MultisensorsExposureMeteringMode		0xD213
+#define PTP_DPC_PARROT_MultisensorsExposureTime			0xD214
+#define PTP_DPC_PARROT_MultisensorsExposureProgramMode		0xD215
+#define PTP_DPC_PARROT_MultisensorsExposureIndex		0xD216
+#define PTP_DPC_PARROT_MultisensorsIrradianceGain		0xD217
+#define PTP_DPC_PARROT_MultisensorsIrradianceIntegrationTime	0xD218
+#define PTP_DPC_PARROT_OverlapRate				0xD219
+
+
 /* MTP specific Object Properties */
 #define PTP_OPC_StorageID				0xDC01
 #define PTP_OPC_ObjectFormat				0xDC02
@@ -2404,6 +2455,7 @@ struct _PTPParams {
 	PTPIOGetResp	getresp_func;
 	PTPIOGetData	getdata_func;
 	PTPIOGetResp	event_check;
+	PTPIOGetResp	event_check_queue;
 	PTPIOGetResp	event_wait;
 	PTPIOCancelReq	cancelreq_func;
 
@@ -2441,6 +2493,10 @@ struct _PTPParams {
 
 	/* PTP: caching time for properties, default 2 */
 	int			cachetime;
+
+	/* PTP: Storage Caching */
+	PTPStorageIDs		storageids;
+	int			storagechanged;
 
 	/* PTP: Device Property Caching */
 	PTPDeviceProperty	*deviceproperties;
@@ -2493,6 +2549,9 @@ struct _PTPParams {
 	uint16_t	response_packet_size;
 };
 
+/* Asynchronous event callback */
+typedef void (*PTPEventCbFn)(PTPParams *params, uint16_t code, PTPContainer *event, void *user_data);
+
 /* last, but not least - ptp functions */
 uint16_t ptp_usb_sendreq	(PTPParams* params, PTPContainer* req, int dataphase);
 uint16_t ptp_usb_senddata	(PTPParams* params, PTPContainer* ptp,
@@ -2500,8 +2559,10 @@ uint16_t ptp_usb_senddata	(PTPParams* params, PTPContainer* ptp,
 uint16_t ptp_usb_getresp	(PTPParams* params, PTPContainer* resp);
 uint16_t ptp_usb_getdata	(PTPParams* params, PTPContainer* ptp, 
 	                         PTPDataHandler *handler);
-uint16_t ptp_usb_event_check	(PTPParams* params, PTPContainer* event);
+uint16_t ptp_usb_event_async	(PTPParams *params, PTPEventCbFn cb, void *user_data);
 uint16_t ptp_usb_event_wait	(PTPParams* params, PTPContainer* event);
+uint16_t ptp_usb_event_check	(PTPParams* params, PTPContainer* event);
+uint16_t ptp_usb_event_check_queue	(PTPParams* params, PTPContainer* event);
 
 uint16_t ptp_usb_control_get_extended_event_data (PTPParams *params, char *buffer, int *size);
 uint16_t ptp_usb_control_device_reset_request (PTPParams *params);
@@ -2518,6 +2579,7 @@ uint16_t ptp_ptpip_getdata	(PTPParams* params, PTPContainer* ptp,
 	                         PTPDataHandler *handler);
 uint16_t ptp_ptpip_event_wait	(PTPParams* params, PTPContainer* event);
 uint16_t ptp_ptpip_event_check	(PTPParams* params, PTPContainer* event);
+uint16_t ptp_ptpip_event_check_queue	(PTPParams* params, PTPContainer* event);
 
 uint16_t ptp_getdeviceinfo	(PTPParams* params, PTPDeviceInfo* deviceinfo);
 
@@ -2594,6 +2656,8 @@ uint16_t ptp_getobjectinfo	(PTPParams *params, uint32_t handle,
 
 uint16_t ptp_getobject		(PTPParams *params, uint32_t handle,
 				unsigned char** object);
+uint16_t ptp_getobject_with_size	(PTPParams *params, uint32_t handle,
+				unsigned char** object, unsigned int *size);
 uint16_t ptp_getobject_tofd     (PTPParams* params, uint32_t handle, int fd);
 uint16_t ptp_getobject_to_handler (PTPParams* params, uint32_t handle, PTPDataHandler*);
 uint16_t ptp_getpartialobject	(PTPParams* params, uint32_t handle, uint32_t offset,
@@ -2662,6 +2726,7 @@ uint16_t ptp_getfilesystemmanifest (PTPParams* params, uint32_t storage,
 
 
 uint16_t ptp_check_event (PTPParams *params);
+uint16_t ptp_check_event_queue (PTPParams *params);
 uint16_t ptp_wait_event (PTPParams *params);
 uint16_t ptp_add_event (PTPParams *params, PTPContainer *evt);
 int ptp_get_one_event (PTPParams *params, PTPContainer *evt);

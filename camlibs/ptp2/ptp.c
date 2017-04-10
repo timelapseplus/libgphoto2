@@ -1,7 +1,7 @@
 /* ptp.c
  *
  * Copyright (C) 2001-2004 Mariusz Woloszyn <emsi@ipartners.pl>
- * Copyright (C) 2003-2016 Marcus Meissner <marcus@jet.franken.de>
+ * Copyright (C) 2003-2017 Marcus Meissner <marcus@jet.franken.de>
  * Copyright (C) 2006-2008 Linus Walleij <triad@df.lth.se>
  * Copyright (C) 2007 Tero Saarni <tero.saarni@gmail.com>
  * Copyright (C) 2009 Axel Waggershauser <awagger@web.de>
@@ -1128,6 +1128,7 @@ ptp_free_params (PTPParams *params)
 	for (i=0;i<params->nrofobjects;i++)
 		ptp_free_object (&params->objects[i]);
 	free (params->objects);
+	free (params->storageids.Storage);
 	free (params->events);
 	for (i=0;i<params->nrofcanon_props;i++) {
 		free (params->canon_props[i].data);
@@ -1219,6 +1220,9 @@ ptp_getobjecthandles (PTPParams* params, uint32_t storage,
 	uint16_t	ret;
 	unsigned char	*data;
 	unsigned int	size;
+
+	objecthandles->Handler = NULL;
+	objecthandles->n = 0;
 
 	PTP_CNT_INIT(ptp, PTP_OC_GetObjectHandles, storage, objectformatcode, associationOH);
 	ret=ptp_transaction(params, &ptp, PTP_DP_GETDATA, 0, &data, &size);
@@ -1389,6 +1393,27 @@ ptp_getobject (PTPParams* params, uint32_t handle, unsigned char** object)
 
 	PTP_CNT_INIT(ptp, PTP_OC_GetObject, handle);
 	return ptp_transaction(params, &ptp, PTP_DP_GETDATA, 0, object, NULL);
+}
+
+/**
+ * ptp_getobject_with_size:
+ * params:	PTPParams*
+ *		handle			- Object handle
+ *		object			- pointer to data area
+ *		size			- pointer to uint, returns size of object
+ *
+ * Get object 'handle' from device and store the data in newly
+ * allocated 'object'.
+ *
+ * Return values: Some PTP_RC_* code.
+ **/
+uint16_t
+ptp_getobject_with_size (PTPParams* params, uint32_t handle, unsigned char** object, unsigned int *size)
+{
+	PTPContainer ptp;
+
+	PTP_CNT_INIT(ptp, PTP_OC_GetObject, handle);
+	return ptp_transaction(params, &ptp, PTP_DP_GETDATA, 0, object, size);
 }
 
 /**
@@ -2128,9 +2153,51 @@ handle_event_internal (PTPParams *params, PTPContainer *event)
 			}
 		break;
 	}
+	case PTP_EC_StoreAdded:
+	case PTP_EC_StoreRemoved: {
+		int i;
+
+		/* refetch storage IDs and also invalidate whole object tree */
+		free (params->storageids.Storage);
+		params->storageids.Storage	= NULL;
+		params->storageids.n 		= 0;
+		ptp_getstorageids (params, &params->storageids);
+
+		/* free object storage as it might be associated with the storage ids */
+		/* FIXME: enhance and just delete the ones from the storage */
+		for (i=0;i<params->nrofobjects;i++)
+			ptp_free_object (&params->objects[i]);
+		free (params->objects);
+		params->objects 		= NULL;
+		params->nrofobjects 		= 0;
+
+		params->storagechanged		= 1;
+		break;
+	}
 	default: /* check if we should handle it internally too */
 		break;
 	}
+}
+
+uint16_t
+ptp_check_event_queue (PTPParams *params)
+{
+	PTPContainer	event;
+	uint16_t	ret;
+
+	/* We try to do a event check without I/O */
+	/* Basically this means just looking at the meanwhile queued events */
+
+	ret = params->event_check_queue(params,&event);
+
+	if (ret == PTP_RC_OK) {
+		ptp_debug (params, "event: nparams=0x%X, code=0x%X, trans_id=0x%X, p1=0x%X, p2=0x%X, p3=0x%X", event.Nparam,event.Code,event.Transaction_ID, event.Param1, event.Param2, event.Param3);
+		ptp_add_event (params, &event);
+		handle_event_internal (params, &event);
+	}
+	if (ret == PTP_ERROR_TIMEOUT) /* ok, just new events */
+		ret = PTP_RC_OK;
+	return ret;
 }
 
 uint16_t
@@ -2223,22 +2290,7 @@ ptp_wait_event (PTPParams *params)
 		ptp_debug (params, "event: nparams=0x%X, code=0x%X, trans_id=0x%X, p1=0x%X, p2=0x%X, p3=0x%X", event.Nparam,event.Code,event.Transaction_ID, event.Param1, event.Param2, event.Param3);
 		ptp_add_event (params, &event);
 
-		/* handle some PTP stack internal events */
-		switch (event.Code) {
-		case PTP_EC_DevicePropChanged: {
-			unsigned int i;
-
-			/* mark the property for a forced refresh on the next query */
-			for (i=0;i<params->nrofdeviceproperties;i++)
-				if (params->deviceproperties[i].desc.DevicePropertyCode == event.Param1) {
-					params->deviceproperties[i].timestamp = 0;
-					break;
-				}
-			break;
-		}
-		default: /* check if we should handle it internally too */
-			break;
-		}
+		handle_event_internal (params, &event);
 	}
 	if (ret == PTP_ERROR_TIMEOUT) /* ok, just new events */
 		ret = PTP_RC_OK;
@@ -2686,23 +2738,36 @@ ptp_canon_getobjectinfo (PTPParams* params, uint32_t store, uint32_t p2,
 	PTPContainer	ptp;
 	uint16_t	ret;
 	unsigned char	*data;
-	unsigned int	i;
+	unsigned int	i, size;
 	
+	*entnum = 0;
+	*entries = NULL;
 	PTP_CNT_INIT(ptp, PTP_OC_CANON_GetObjectInfoEx, store, p2, parent, handle);
+	data = NULL;
+	size = 0;
 	ret=ptp_transaction(params, &ptp, PTP_DP_GETDATA, 0, &data, NULL);
 	if (ret != PTP_RC_OK)
 		goto exit;
-
-	*entnum=ptp.Param1;
-	*entries=calloc(*entnum, sizeof(PTPCANONFolderEntry));
-	if (*entries==NULL) {
-		ret=PTP_RC_GeneralError;
+	if (!data)
+		return ret;
+	if (ptp.Param1 > size/PTP_CANON_FolderEntryLen) {
+		ptp_debug (params, "param1 is %d, size is only %d", ptp.Param1, size);
+		ret = PTP_RC_GeneralError;
 		goto exit;
 	}
-	for(i=0; i<(*entnum); i++)
+
+	*entnum = ptp.Param1;
+	*entries= calloc(*entnum, sizeof(PTPCANONFolderEntry));
+	if (*entries == NULL) {
+		ret = PTP_RC_GeneralError;
+		goto exit;
+	}
+	for(i=0; i<(*entnum); i++) {
+		if (size < i*PTP_CANON_FolderEntryLen) break;
 		ptp_unpack_Canon_FE(params,
 				    data+i*PTP_CANON_FolderEntryLen,
 				    &((*entries)[i]) );
+	}
 
 exit:
 	free (data);
@@ -3960,6 +4025,10 @@ ptp_chdk_read_script_msg(PTPParams* params, ptp_chdk_script_msg **msg)
 
 	/* camera will always send data, otherwise getdata will cause problems */
 	CHECK_PTP_RC(ptp_transaction(params, &ptp, PTP_DP_GETDATA, 0, &data, NULL));
+	if (!data) {
+		ptp_error(params,"no data received");
+		return PTP_ERROR_BADPARAM;
+	}
 
 	/* for convenience, always allocate an extra byte and null it*/
 	*msg = malloc(sizeof(ptp_chdk_script_msg) + ptp.Param4 + 1);
@@ -4027,7 +4096,8 @@ ptp_android_getpartialobject64 (PTPParams* params, uint32_t handle, uint64_t off
 {
 	PTPContainer ptp;
 
-	PTP_CNT_INIT(ptp, PTP_OC_ANDROID_GetPartialObject64, handle, offset & 0xFFFFFFFF, offset >> 32, maxbytes);
+	/* casts due to varargs otherwise pushing 64bit values on the stack */
+	PTP_CNT_INIT(ptp, PTP_OC_ANDROID_GetPartialObject64, handle, ((uint32_t)offset & 0xFFFFFFFF), (uint32_t)(offset >> 32), maxbytes);
 	return ptp_transaction(params, &ptp, PTP_DP_GETDATA, 0, object, len);
 }
 
@@ -4038,7 +4108,7 @@ ptp_android_sendpartialobject (PTPParams* params, uint32_t handle, uint64_t offs
 	PTPContainer	ptp;
 	uint16_t	ret;
 
-	PTP_CNT_INIT(ptp, PTP_OC_ANDROID_SendPartialObject, handle, offset & 0xFFFFFFFF, offset >> 32, len);
+	PTP_CNT_INIT(ptp, PTP_OC_ANDROID_SendPartialObject, handle, (uint32_t)(offset & 0xFFFFFFFF), (uint32_t)(offset >> 32), len);
 
 	/*
 	 * MtpServer.cpp is buggy: it uses write() without offset
@@ -4907,6 +4977,36 @@ ptp_get_property_description(PTPParams* params, uint16_t dpc)
 		{0,NULL}
         };
 
+        struct {
+		uint16_t dpc;
+		const char *txt;
+        } ptp_device_properties_PARROT[] = {
+		{PTP_DPC_PARROT_PhotoSensorEnableMask,		"PhotoSensorEnableMask"}, /* 0xD201 */
+		{PTP_DPC_PARROT_PhotoSensorsKeepOn,		"PhotoSensorsKeepOn"}, /* 0xD202 */
+		{PTP_DPC_PARROT_MultispectralImageSize,		"MultispectralImageSize"}, /* 0xD203 */
+		{PTP_DPC_PARROT_MainBitDepth,			"MainBitDepth"}, /* 0xD204 */
+		{PTP_DPC_PARROT_MultispectralBitDepth,		"MultispectralBitDepth"}, /* 0xD205 */
+		{PTP_DPC_PARROT_HeatingEnable,			"HeatingEnable"}, /* 0xD206 */
+		{PTP_DPC_PARROT_WifiStatus,			"WifiStatus"}, /* 0xD207 */
+		{PTP_DPC_PARROT_WifiSSID,			"WifiSSID"}, /* 0xD208 */
+		{PTP_DPC_PARROT_WifiEncryptionType,		"WifiEncryptionType"}, /* 0xD209 */
+		{PTP_DPC_PARROT_WifiPassphrase,			"WifiPassphrase"}, /* 0xD20A */
+		{PTP_DPC_PARROT_WifiChannel,			"WifiChannel"}, /* 0xD20B */
+		{PTP_DPC_PARROT_Localization,			"Localization"}, /* 0xD20C */
+		{PTP_DPC_PARROT_WifiMode,			"WifiMode"}, /* 0xD20D */
+		{PTP_DPC_PARROT_AntiFlickeringFrequency,	"AntiFlickeringFrequency"}, /* 0xD210 */
+		{PTP_DPC_PARROT_DisplayOverlayMask,		"DisplayOverlayMask"}, /* 0xD211 */
+		{PTP_DPC_PARROT_GPSInterval,			"GPSInterval"}, /* 0xD212 */
+		{PTP_DPC_PARROT_MultisensorsExposureMeteringMode,"MultisensorsExposureMeteringMode"}, /* 0xD213 */
+		{PTP_DPC_PARROT_MultisensorsExposureTime,	"MultisensorsExposureTime"}, /* 0xD214 */
+		{PTP_DPC_PARROT_MultisensorsExposureProgramMode,"MultisensorsExposureProgramMode"}, /* 0xD215 */
+		{PTP_DPC_PARROT_MultisensorsExposureIndex,	"MultisensorsExposureIndex"}, /* 0xD216 */
+		{PTP_DPC_PARROT_MultisensorsIrradianceGain,	"MultisensorsIrradianceGain"}, /* 0xD217 */
+		{PTP_DPC_PARROT_MultisensorsIrradianceIntegrationTime,"MultisensorsIrradianceIntegrationTime"}, /* 0xD218 */
+		{PTP_DPC_PARROT_OverlapRate,			"OverlapRate"}, /* 0xD219 */
+		{0,NULL}
+        };
+
 
 	for (i=0; ptp_device_properties[i].txt!=NULL; i++)
 		if (ptp_device_properties[i].dpc==dpc)
@@ -4942,6 +5042,11 @@ ptp_get_property_description(PTPParams* params, uint16_t dpc)
 		for (i=0; ptp_device_properties_SONY[i].txt!=NULL; i++)
 			if (ptp_device_properties_SONY[i].dpc==dpc)
 				return (ptp_device_properties_SONY[i].txt);
+	if (params->deviceinfo.VendorExtensionID==PTP_VENDOR_PARROT)
+		for (i=0; ptp_device_properties_PARROT[i].txt!=NULL; i++)
+			if (ptp_device_properties_PARROT[i].dpc==dpc)
+				return (ptp_device_properties_PARROT[i].txt);
+
 
 	return NULL;
 }
@@ -5630,9 +5735,14 @@ ptp_render_property_value(PTPParams* params, uint16_t dpc,
 		switch (dpc) {
 		case PTP_DPC_MTP_SynchronizationPartner:
 		case PTP_DPC_MTP_DeviceFriendlyName:
-			return snprintf(out, length, "%s", dpd->CurrentValue.str);
+			if (dpd->DataType == PTP_DTC_STR)
+				return snprintf(out, length, "%s", dpd->CurrentValue.str);
+			else
+				return snprintf(out, length, "invalid type, expected STR");
 		case PTP_DPC_MTP_SecureTime:
 		case PTP_DPC_MTP_DeviceCertificate: {
+			if (dpd->DataType != PTP_DTC_AUINT16)
+				return snprintf(out, length, "invalid type, expected AUINT16");
 			/* FIXME: Convert to use unicode demux functions */
 			for (i=0;(i<dpd->CurrentValue.a.count) && (i<length);i++)
 				out[i] = dpd->CurrentValue.a.v[i].u16;
@@ -5775,6 +5885,14 @@ ptp_render_ofc(PTPParams* params, uint16_t ofc, int spaceleft, char *txt)
 			switch (ofc) {
 			case PTP_OFC_CANON_CRW:
 				return snprintf (txt, spaceleft,"CRW");
+			default:
+				break;
+			}
+			break;
+		case PTP_VENDOR_SONY:
+			switch (ofc) {
+			case PTP_OFC_SONY_RAW:
+				return snprintf (txt, spaceleft,"ARW");
 			default:
 				break;
 			}
@@ -6099,6 +6217,23 @@ ptp_opcode_trans_t ptp_opcode_sony_trans[] = {
 	{PTP_OC_SONY_GetAllDevicePropData,"PTP_OC_SONY_GetAllDevicePropData"},
 };
 
+ptp_opcode_trans_t ptp_opcode_parrot_trans[] = {
+	{PTP_OC_PARROT_GetSunshineValues,"PTP_OC_PARROT_GetSunshineValues"},
+	{PTP_OC_PARROT_GetTemperatureValues,"PTP_OC_PARROT_GetTemperatureValues"},
+	{PTP_OC_PARROT_GetAngleValues,"PTP_OC_PARROT_GetAngleValues"},
+	{PTP_OC_PARROT_GetGpsValues,"PTP_OC_PARROT_GetGpsValues"},
+	{PTP_OC_PARROT_GetGyroscopeValues,"PTP_OC_PARROT_GetGyroscopeValues"},
+	{PTP_OC_PARROT_GetAccelerometerValues,"PTP_OC_PARROT_GetAccelerometerValues"},
+	{PTP_OC_PARROT_GetMagnetometerValues,"PTP_OC_PARROT_GetMagnetometerValues"},
+	{PTP_OC_PARROT_GetImuValues,"PTP_OC_PARROT_GetImuValues"},
+	{PTP_OC_PARROT_GetStatusMask,"PTP_OC_PARROT_GetStatusMask"},
+	{PTP_OC_PARROT_EjectStorage,"PTP_OC_PARROT_EjectStorage"},
+	{PTP_OC_PARROT_StartMagnetoCalib,"PTP_OC_PARROT_StartMagnetoCalib"},
+	{PTP_OC_PARROT_StopMagnetoCalib,"PTP_OC_PARROT_StopMagnetoCalib"},
+	{PTP_OC_PARROT_MagnetoCalibStatus,"PTP_OC_PARROT_MagnetoCalibStatus"},
+	{PTP_OC_PARROT_SendFirmwareUpdate,"PTP_OC_PARROT_SendFirmwareUpdate"},
+};
+
 const char*
 ptp_get_opcode_name(PTPParams* params, uint16_t opcode)
 {
@@ -6120,6 +6255,7 @@ ptp_get_opcode_name(PTPParams* params, uint16_t opcode)
 	case PTP_VENDOR_NIKON:	RETURN_NAME_FROM_TABLE(ptp_opcode_nikon_trans, opcode);
 	case PTP_VENDOR_CANON:	RETURN_NAME_FROM_TABLE(ptp_opcode_canon_trans, opcode);
 	case PTP_VENDOR_SONY:	RETURN_NAME_FROM_TABLE(ptp_opcode_sony_trans, opcode);
+	case PTP_VENDOR_PARROT:	RETURN_NAME_FROM_TABLE(ptp_opcode_parrot_trans, opcode);
 	default:
 		break;
 	}

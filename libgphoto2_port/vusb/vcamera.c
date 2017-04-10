@@ -538,7 +538,7 @@ ptp_deviceinfo_write(vcamera *cam, ptpcontainer *ptp) {
 		x += put_16bit_le(data+x,0);		/* VendorExtensionVersion */
 		break;
 	}
-	x += put_string(data+x,"GPhoto-VirtualCamera: 1.0;");	/* VendorExtensionDesc */
+	x += put_string(data+x,"G-V: 1.0;");	/* VendorExtensionDesc */
 	x += put_16bit_le(data+x,0);		/* FunctionalMode */
 
 	cnt = 0;
@@ -584,11 +584,11 @@ ptp_deviceinfo_write(vcamera *cam, ptpcontainer *ptp) {
 	imageformats[0] = 0x3801;
 	x += put_16bit_le_array(data+x,imageformats,1);	/* ImageFormats */
 
-	x += put_string(data+x,"GPhoto");		/* Manufacturer */
-	x += put_string(data+x,"VirtualCamera");	/* Model */
-	x += put_string(data+x,"2.5.9");		/* DeviceVersion */
-	x += put_string(data+x,"0.1");			/* DeviceVersion */
-	x += put_string(data+x,"1");			/* SerialNumber */
+	x += put_string(data+x,"GP");	/* Manufacturer */
+	x += put_string(data+x,"VC");	/* Model */
+	x += put_string(data+x,"2.5.11");/* DeviceVersion */
+	x += put_string(data+x,"0.1");	/* DeviceVersion */
+	x += put_string(data+x,"1");	/* SerialNumber */
 
 	ptp_senddata(cam,0x1001,data,x);
 	free (data);
@@ -793,7 +793,7 @@ ptp_getstorageinfo_write(vcamera *cam, ptpcontainer *ptp) {
 	CHECK_PARAM_COUNT(1);
 
 	if (ptp->params[0] != 0x00010001) {
-		gp_log (GP_LOG_ERROR,__FUNCTION__, "invalid storage id 0x%08x", ptp->params[1]);
+		gp_log (GP_LOG_ERROR,__FUNCTION__, "invalid storage id 0x%08x", ptp->params[0]);
 		ptp_response(cam,PTP_RC_InvalidStorageId,0);
 		return 1;
 	}
@@ -805,8 +805,8 @@ ptp_getstorageinfo_write(vcamera *cam, ptpcontainer *ptp) {
 	x += put_64bit_le (data+x, 0x42424242);	/* MaxCapacity */
 	x += put_64bit_le (data+x, 0x21212121);	/* FreeSpaceInBytes */
 	x += put_32bit_le (data+x, 150);	/* FreeSpaceInImages ... around 150 */
-	x += put_string (data+x, "GPhoto Virtual Camera Storage");	/* StorageDescription */
-	x += put_string (data+x, "GPhoto Virtual Camera Storage Label");	/* VolumeLabel */
+	x += put_string (data+x, "GPVC Storage");	/* StorageDescription */
+	x += put_string (data+x, "GPVCS Label");	/* VolumeLabel */
 
 	ptp_senddata (cam, 0x1005, data, x);
 	free (data);
@@ -1805,6 +1805,9 @@ vcam_read(vcamera*cam, int ep, unsigned char *data, int bytes) {
 					cam->fuzzpending = toread - bytes;
 					toread = bytes;
 				}
+				if (toread <= 4)
+					return toread;
+
 				toread -= 4;
 
 				hasread = fread(data + 4, 1, toread, cam->fuzzf);
@@ -1909,7 +1912,9 @@ vcam_readint(vcamera*cam, unsigned char *data, int bytes, int timeout) {
 	struct ptp_interrupt	*pint;
 
 	if (!first_interrupt) {
+#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
 		usleep (timeout*1000);
+#endif
 		return GP_ERROR_TIMEOUT;
 	}
 	gettimeofday (&now, NULL);
@@ -1921,13 +1926,17 @@ vcam_readint(vcamera*cam, unsigned char *data, int bytes, int timeout) {
 		end.tv_sec++;
 	}
 	if (first_interrupt->triggertime.tv_sec > end.tv_sec) {
+#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
 		usleep (1000*timeout);
+#endif
 		return GP_ERROR_TIMEOUT;
 	}
 	if (	(first_interrupt->triggertime.tv_sec == end.tv_sec) &&
 		(first_interrupt->triggertime.tv_usec > end.tv_usec)
 	) {
+#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
 		usleep (1000*timeout);
+#endif
 		return GP_ERROR_TIMEOUT;
 	}
 	newtimeout = (first_interrupt->triggertime.tv_sec - now.tv_sec)*1000 + (first_interrupt->triggertime.tv_usec - now.tv_usec)/1000;

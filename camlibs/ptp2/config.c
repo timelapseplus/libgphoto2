@@ -1,6 +1,6 @@
 /* config.c
  *
- * Copyright (C) 2003-2016 Marcus Meissner <marcus@jet.franken.de>
+ * Copyright (C) 2003-2017 Marcus Meissner <marcus@jet.franken.de>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -17,7 +17,7 @@
  * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
  * Boston, MA  02110-1301  USA
  */
-#define _BSD_SOURCE
+#define _DEFAULT_SOURCE
 #include "config.h"
 
 #include <stdlib.h>
@@ -356,6 +356,7 @@ camera_prepare_canon_eos_capture(Camera *camera, GPContext *context) {
 		LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_Artist));
 		LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_Copyright));
 		LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_SerialNumber));
+		LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_ShutterCounter));
 
 /*		LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_DPOFVersion)); */
 /*		LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_MyMenuList)); */
@@ -407,6 +408,19 @@ camera_prepare_capture (Camera *camera, GPContext *context)
 	
 	GP_LOG_D ("prepare_capture");
 	switch (params->deviceinfo.VendorExtensionID) {
+	case PTP_VENDOR_FUJI:	{
+		PTPPropertyValue	propval;
+
+		if (!have_prop(camera, PTP_VENDOR_FUJI, 0xd207))
+			break;
+		if (!have_prop(camera, PTP_VENDOR_FUJI, 0xd208))
+			break;
+		propval.u16 = 0x0002;
+		C_PTP_REP (ptp_setdevicepropvalue (params, 0xd207, &propval, PTP_DTC_UINT16));
+		propval.u16 = 0x0200;
+		C_PTP_REP (ptp_setdevicepropvalue (params, 0xd208, &propval, PTP_DTC_UINT16));
+		break;
+	}
 	case PTP_VENDOR_CANON:
 		if (ptp_operation_issupported(params, PTP_OC_CANON_InitiateReleaseControl))
 			return camera_prepare_canon_powershot_capture(camera,context);
@@ -414,7 +428,9 @@ camera_prepare_capture (Camera *camera, GPContext *context)
 		if (ptp_operation_issupported(params, PTP_OC_CHDK))
 			return camera_prepare_chdk_capture(camera,context);
 
-		if (ptp_operation_issupported(params, PTP_OC_CANON_EOS_RemoteRelease))
+		if (ptp_operation_issupported(params, PTP_OC_CANON_EOS_RemoteRelease) ||
+		    ptp_operation_issupported(params, PTP_OC_CANON_EOS_RemoteReleaseOn)
+		)
 			return camera_prepare_canon_eos_capture(camera,context);
 		gp_context_error(context, _("Sorry, your Canon camera does not support Canon capture"));
 		return GP_ERROR_NOT_SUPPORTED;
@@ -476,7 +492,9 @@ camera_unprepare_capture (Camera *camera, GPContext *context)
 		if (ptp_operation_issupported(&camera->pl->params, PTP_OC_CHDK))
 			return camera_unprepare_chdk_capture(camera,context);
 
-		if (ptp_operation_issupported(&camera->pl->params, PTP_OC_CANON_EOS_RemoteRelease))
+		if (ptp_operation_issupported(&camera->pl->params, PTP_OC_CANON_EOS_RemoteRelease) ||
+		    ptp_operation_issupported(&camera->pl->params, PTP_OC_CANON_EOS_RemoteReleaseOn)
+		)
 			return camera_unprepare_canon_eos_capture (camera, context);
 
 		gp_context_error(context,
@@ -705,6 +723,10 @@ _get_Generic16Table(CONFIG_GET_ARGS, struct deviceproptableu16* tbl, int tblsize
 					gp_widget_set_value (*widget, buf);
 				}
 			}
+
+			/* device might report stepsize 0. but we do at least 1 round */
+			if (dpd->FORM.Range.StepSize.u16 == 0)
+				break;
 		}
 	}
 	if (!isset2) {
@@ -873,6 +895,10 @@ _get_GenericI16Table(CONFIG_GET_ARGS, struct deviceproptablei16* tbl, int tblsiz
 					gp_widget_set_value (*widget, buf);
 				}
 			}
+
+			/* device might report stepsize 0. but we do at least 1 round */
+			if (dpd->FORM.Range.StepSize.i16 == 0)
+				break;
 		}
 	}
 	if (!isset2) {
@@ -1016,6 +1042,10 @@ _get_Generic8Table(CONFIG_GET_ARGS, struct deviceproptableu8* tbl, int tblsize) 
 					gp_widget_set_value (*widget, buf);
 				}
 			}
+
+			/* device might report stepsize 0. but we do at least 1 round */
+			if (dpd->FORM.Range.StepSize.i16 == 0)
+				break;
 		}
 		if (!isset2) {
 			char buf[200];
@@ -1326,10 +1356,14 @@ _put_sony_value_##bits (PTPParams*params, uint16_t prop, inttype value,int useen
 	GP_LOG_D("setting 0x%04x to 0x%08x", prop, value);				\
 											\
 	C_PTP_REP (ptp_generic_getdevicepropdesc (params, prop, &dpd));			\
+	if (value == dpd.CurrentValue.bits) {						\
+		GP_LOG_D("value is already 0x%08x", value);				\
+		return GP_OK;								\
+	}										\
 	do {										\
 		origval = dpd.CurrentValue.bits;					\
 		/* if it is a ENUM, the camera will walk through the ENUM */		\
-		if (useenumorder && (dpd.FormFlag & PTP_DPFF_Enumeration)) {				\
+		if (useenumorder && (dpd.FormFlag & PTP_DPFF_Enumeration)) {		\
 			int i, posorig = -1, posnew = -1;				\
 											\
 			for (i=0;i<dpd.FORM.Enum.NumberOfValues;i++) {			\
@@ -1345,11 +1379,15 @@ _put_sony_value_##bits (PTPParams*params, uint16_t prop, inttype value,int useen
 				return GP_ERROR_BAD_PARAMETERS;				\
 			}								\
 			GP_LOG_D("posnew %d, posorig %d, value %d", posnew, posorig, value);	\
+			if (posnew == posorig)						\
+				break;							\
 			if (posnew > posorig)						\
 				propval.u8 = 0x01;					\
 			else								\
 				propval.u8 = 0xff;					\
 		} else {								\
+			if (value == origval)						\
+				break;							\
 			if (value > origval)						\
 				propval.u8 = 0x01;					\
 			else								\
@@ -1387,6 +1425,32 @@ _put_sony_value_##bits (PTPParams*params, uint16_t prop, inttype value,int useen
 			GP_LOG_D ("value did not change (0x%x vs 0x%x vs target 0x%x), not good ...", dpd.CurrentValue.bits, origval, value);\
 			break;								\
 		}									\
+		/* We did not get there. Did we hit 0? */				\
+		if (useenumorder && (dpd.FormFlag & PTP_DPFF_Enumeration)) {		\
+			int i, posnow = -1;						\
+											\
+			for (i=0;i<dpd.FORM.Enum.NumberOfValues;i++) {			\
+				if (dpd.CurrentValue.bits == dpd.FORM.Enum.SupportedValue[i].bits) {	\
+					posnow = i;					\
+					break;						\
+				}							\
+			}								\
+			if (posnow == -1) {						\
+				gp_context_error (context, _("Now value is not in enumeration."));\
+				return GP_ERROR_BAD_PARAMETERS;				\
+			}								\
+			GP_LOG_D("posnow %d, value %d", posnow, dpd.CurrentValue.bits);	\
+			if ((posnow == 0) && (propval.u8 == 0xff)) {			\
+				gp_context_error (context, _("Sony was not able to set the new value, is it valid?"));	\
+				GP_LOG_D ("hit bottom of enumeration, not good.");	\
+				return GP_ERROR;					\
+			}								\
+			if ((posnow == dpd.FORM.Enum.NumberOfValues-1) && (propval.u8 == 0x01)) {			\
+				GP_LOG_D ("hit top of enumeration, not good.");		\
+				gp_context_error (context, _("Sony was not able to set the new value, is it valid?"));	\
+				return GP_ERROR;					\
+			}								\
+		} 									\
 	} while (1);									\
 	return GP_OK;									\
 }
@@ -1444,7 +1508,11 @@ static struct deviceproptableu16 whitebalance[] = {
 	{ N_("Fluorescent: Day White"),	0x8003, PTP_VENDOR_SONY },
 	{ N_("Fluorescent: Daylight"),	0x8004, PTP_VENDOR_SONY },
 	{ N_("Choose Color Temperature"),0x8012, PTP_VENDOR_SONY },
+	{ N_("Preset 1"),		0x8020, PTP_VENDOR_SONY },
+	{ N_("Preset 2"),		0x8021, PTP_VENDOR_SONY },
+	{ N_("Preset 3"),		0x8022, PTP_VENDOR_SONY },
 	{ N_("Preset"),			0x8023, PTP_VENDOR_SONY },
+	{ N_("Underwater: Auto"),	0x8030, PTP_VENDOR_SONY },
 
 	{ N_("Shade"),			0x8001, PTP_VENDOR_PENTAX },
 	{ N_("Cloudy"),			0x8002, PTP_VENDOR_PENTAX },
@@ -1731,7 +1799,7 @@ _get_Nikon_HueAdjustment(CONFIG_GET_ARGS) {
 				isset = TRUE;
 			}
 		}
-		if (!isset) {
+		if (!isset && (dpd->FORM.Enum.NumberOfValues > 0)) {
 			sprintf (buf, "%d", dpd->FORM.Enum.SupportedValue[0].i8);
 			gp_widget_set_value (*widget, buf);
 		}
@@ -2097,8 +2165,8 @@ static struct deviceproptableu8 nikon1_size[] = {
 GENERIC8TABLE(Nikon1_ImageSize,nikon1_size)
 
 static struct deviceproptableu8 sony_aspectratio[] = {
-	{ N_("16:9"),		0x01, 0 },
-	{ N_("3:2"),		0x02, 0 },
+	{ N_("3:2"),		0x01, 0 },
+	{ N_("16:9"),		0x02, 0 },
 };
 GENERIC8TABLE(Sony_AspectRatio,sony_aspectratio)
 
@@ -2255,6 +2323,8 @@ static struct deviceproptableu16 canon_isospeed[] = {
 	{ "16000",		0x0083, 0 },
 	{ "20000",		0x0085, 0 },
 	{ "25600",		0x0088, 0 },
+	{ "32000",		0x008b, 0 },
+	{ "40000",		0x008d, 0 },
 	{ "51200",		0x0090, 0 },
 	{ "102400",		0x0098, 0 },
 	{ N_("Auto"),		0x0000, 0 },
@@ -2333,8 +2403,10 @@ static struct deviceproptableu16 canon_eos_drive_mode[] = {
 	{ N_("Continuous"),		0x0001, 0 },
 	{ N_("Continuous high speed"),	0x0004, 0 },
 	{ N_("Continuous low speed"),	0x0005, 0 },
+	{ N_("Single: Silent shooting"),0x0006, 0 },
 	{ N_("Timer 10 sec"),		0x0010, 0 },
 	{ N_("Timer 2 sec"),		0x0011, 0 },
+	{ N_("Super high speed continuous shooting"),		0x0012, 0 },
 	{ N_("Single silent"),		0x0013, 0 },
 	{ N_("Continuous silent"),	0x0014, 0 },
 };
@@ -2538,11 +2610,15 @@ _get_Milliseconds(CONFIG_GET_ARGS) {
 			char buf[20];
 
 			sprintf (buf, "%0.3fs", i/1000.0);
-			gp_widget_add_choice (*widget, buf);
+			CR (gp_widget_add_choice (*widget, buf));
 			if (	((dpd->DataType == PTP_DTC_UINT32) && (dpd->CurrentValue.u32 == i)) ||
 				((dpd->DataType == PTP_DTC_UINT16) && (dpd->CurrentValue.u16 == i))
 			   )
-				gp_widget_set_value (*widget, buf);
+				CR (gp_widget_set_value (*widget, buf));
+
+			/* device might report stepsize 0. but we do at least 1 round */
+			if (s == 0)
+				break;
 		}
 
 	}
@@ -2761,15 +2837,25 @@ _get_Sharpness(CONFIG_GET_ARGS) {
 			max = dpd->FORM.Range.MaximumValue.i8;
 			s = dpd->FORM.Range.StepSize.i8;
 		}
-		for (i=min;i<=max; i+=s) {
+		if (!s) {
+			gp_widget_set_value (*widget, "invalid range, stepping 0");
+			return GP_OK;
+		}
+		for (i=min; i<=max; i+=s) {
 			char buf[20];
 
-			sprintf (buf, "%d%%", (i-min)*100/(max-min));
+			if (max != min)
+				sprintf (buf, "%d%%", (i-min)*100/(max-min));
+			else
+				strcpy (buf, "range max=min?");
 			gp_widget_add_choice (*widget, buf);
 			if (	((dpd->DataType == PTP_DTC_UINT8) && (dpd->CurrentValue.u8 == i)) ||
 				((dpd->DataType == PTP_DTC_INT8)  && (dpd->CurrentValue.i8 == i))
 			)
 				gp_widget_set_value (*widget, buf);
+
+			/* malicious device might report stepsize 0 ... but lets do 1 cycle through the loop */
+			if (s == 0) break;
 		}
 	}
 
@@ -2802,7 +2888,10 @@ _get_Sharpness(CONFIG_GET_ARGS) {
 			else
 				x = dpd->FORM.Enum.SupportedValue[i].i8;
 
-			sprintf (buf, "%d%%", (x-min)*100/(max-min));
+			if (max != min)
+				sprintf (buf, "%d%%", (x-min)*100/(max-min));
+			else
+				strcpy (buf, "range max=min?");
 			gp_widget_add_choice (*widget, buf);
 			if (t == x)
 				gp_widget_set_value (*widget, buf);
@@ -2867,8 +2956,11 @@ _put_Sharpness(CONFIG_PUT_ARGS) {
 			char buf[20];
 
 			sprintf (buf, "%d%%", (i-min)*100/(max-min));
-			if (strcmp (buf, val))
+			if (strcmp (buf, val)) {
+				if (s == 0)
+					break;
 				continue;
+			}
 			if (dpd->DataType == PTP_DTC_UINT8)
 				propval->u8 = i;
 			else
@@ -3154,19 +3246,61 @@ static struct deviceproptableu16 capture_mode[] = {
 
 	{ N_("Continuous Low Speed"),	0x8012, PTP_VENDOR_SONY},
 	{ N_("Selftimer 2s"),		0x8005, PTP_VENDOR_SONY},
+	{ N_("Selftimer 5s"),		0x8003, PTP_VENDOR_SONY},
 	{ N_("Selftimer 10s"),		0x8004, PTP_VENDOR_SONY},
-	{ N_("Bracketing C 0.3 Steps"),	0x8337, PTP_VENDOR_SONY},
-	{ N_("Bracketing C 0.7 Steps"),	0x8377, PTP_VENDOR_SONY},
-	{ N_("Bracketing C 1.0 Steps"),	0x8311, PTP_VENDOR_SONY},
-	{ N_("Bracketing C 2.0 Steps"),	0x8321, PTP_VENDOR_SONY},
-	{ N_("Bracketing C 3.0 Steps"),	0x8331, PTP_VENDOR_SONY},
-	{ N_("Bracketing S 0.3 Steps"),	0x8336, PTP_VENDOR_SONY},
-	{ N_("Bracketing S 0.7 Steps"),	0x8376, PTP_VENDOR_SONY},
-	{ N_("Bracketing S 1.0 Steps"),	0x8310, PTP_VENDOR_SONY},
-	{ N_("Bracketing S 2.0 Steps"),	0x8320, PTP_VENDOR_SONY},
-	{ N_("Bracketing S 3.0 Steps"),	0x8330, PTP_VENDOR_SONY},
+	{ N_("Selftimer 10s 3 Pictures"),0x8008, PTP_VENDOR_SONY},
+	{ N_("Selftimer 10s 5 Pictures"),0x8009, PTP_VENDOR_SONY},
+	{ N_("Selftimer 5s 3 Pictures"),0x800c, PTP_VENDOR_SONY},
+	{ N_("Selftimer 5s 5 Pictures"),0x800d, PTP_VENDOR_SONY},
+	{ N_("Selftimer 2s 3 Pictures"),0x800e, PTP_VENDOR_SONY},
+	{ N_("Selftimer 2s 5 Pictures"),0x800f, PTP_VENDOR_SONY},
+
+	{ N_("Bracketing C 0.3 Steps 3 Pictures"),	0x8337, PTP_VENDOR_SONY},
+	{ N_("Bracketing C 0.3 Steps 5 Pictures"),	0x8537, PTP_VENDOR_SONY},
+	{ N_("Bracketing C 0.3 Steps 9 Pictures"),	0x8937, PTP_VENDOR_SONY},
+
+	{ N_("Bracketing C 0.5 Steps 3 Pictures"),	0x8357, PTP_VENDOR_SONY},
+	{ N_("Bracketing C 0.5 Steps 5 Pictures"),	0x8557, PTP_VENDOR_SONY},
+	{ N_("Bracketing C 0.5 Steps 9 Pictures"),	0x8957, PTP_VENDOR_SONY},
+
+	{ N_("Bracketing C 0.7 Steps 3 Pictures"),	0x8377, PTP_VENDOR_SONY},
+	{ N_("Bracketing C 0.7 Steps 5 Pictures"),	0x8577, PTP_VENDOR_SONY},
+	{ N_("Bracketing C 0.7 Steps 9 Pictures"),	0x8977, PTP_VENDOR_SONY},
+
+	{ N_("Bracketing C 1.0 Steps 3 Pictures"),	0x8311, PTP_VENDOR_SONY},
+	{ N_("Bracketing C 1.0 Steps 5 Pictures"),	0x8511, PTP_VENDOR_SONY},
+	{ N_("Bracketing C 1.0 Steps 9 Pictures"),	0x8911, PTP_VENDOR_SONY},
+
+	{ N_("Bracketing C 2.0 Steps 3 Pictures"),	0x8321, PTP_VENDOR_SONY},
+	{ N_("Bracketing C 2.0 Steps 5 Pictures"),	0x8521, PTP_VENDOR_SONY},
+
+	{ N_("Bracketing C 3.0 Steps 3 Pictures"),	0x8331, PTP_VENDOR_SONY},
+	{ N_("Bracketing C 3.0 Steps 5 Pictures"),	0x8531, PTP_VENDOR_SONY},
+
+	{ N_("Bracketing S 0.3 Steps 3 Pictures"),	0x8336, PTP_VENDOR_SONY},
+	{ N_("Bracketing S 0.3 Steps 5 Pictures"),	0x8536, PTP_VENDOR_SONY},
+	{ N_("Bracketing S 0.3 Steps 9 Pictures"),	0x8936, PTP_VENDOR_SONY},
+
+	{ N_("Bracketing S 0.5 Steps 3 Pictures"),	0x8356, PTP_VENDOR_SONY},
+	{ N_("Bracketing S 0.5 Steps 5 Pictures"),	0x8556, PTP_VENDOR_SONY},
+	{ N_("Bracketing S 0.5 Steps 9 Pictures"),	0x8956, PTP_VENDOR_SONY},
+
+	{ N_("Bracketing S 0.7 Steps 3 Pictures"),	0x8376, PTP_VENDOR_SONY},
+	{ N_("Bracketing S 0.7 Steps 5 Pictures"),	0x8576, PTP_VENDOR_SONY},
+	{ N_("Bracketing S 0.7 Steps 9 Pictures"),	0x8976, PTP_VENDOR_SONY},
+
+	{ N_("Bracketing S 1.0 Steps 3 Pictures"),	0x8310, PTP_VENDOR_SONY},
+	{ N_("Bracketing S 1.0 Steps 5 Pictures"),	0x8510, PTP_VENDOR_SONY},
+	{ N_("Bracketing S 1.0 Steps 9 Pictures"),	0x8910, PTP_VENDOR_SONY},
+
+	{ N_("Bracketing S 2.0 Steps 3 Pictures"),	0x8320, PTP_VENDOR_SONY},
+	{ N_("Bracketing S 2.0 Steps 5 Pictures"),	0x8520, PTP_VENDOR_SONY},
+	{ N_("Bracketing S 3.0 Steps 3 Pictures"),	0x8330, PTP_VENDOR_SONY},
+	{ N_("Bracketing S 3.0 Steps 5 Pictures"),	0x8530, PTP_VENDOR_SONY},
 	{ N_("Bracketing WB Lo"),	0x8018, PTP_VENDOR_SONY},
+	{ N_("Bracketing DRO Lo"),	0x8019, PTP_VENDOR_SONY},
 	{ N_("Bracketing WB Hi"),	0x8028, PTP_VENDOR_SONY},
+	{ N_("Bracketing DRO Hi"),	0x8029, PTP_VENDOR_SONY},
 /*
 	{ N_("Continuous"),		0x8001, PTP_VENDOR_CASIO},
 	{ N_("Prerecord"),		0x8002, PTP_VENDOR_CASIO},
@@ -3663,8 +3797,12 @@ _put_Sony_ShutterSpeed(CONFIG_PUT_ARGS) {
 
 	CR (gp_widget_get_value (widget, &val));
 
-	x = dpd->CurrentValue.u32>>16;
-	y = dpd->CurrentValue.u32&0xffff;
+	if (dpd->CurrentValue.u32 == 0) {
+		x = 65536; y = 1;
+	} else {
+		x = dpd->CurrentValue.u32>>16;
+		y = dpd->CurrentValue.u32&0xffff;
+	}
 	old = ((float)x)/(float)y;
 
 	if (!strcmp(val,_("Bulb"))) {
@@ -3683,6 +3821,8 @@ _put_Sony_ShutterSpeed(CONFIG_PUT_ARGS) {
 	new = ((float)x)/(float)y;
 	do {
 		origval = dpd->CurrentValue.u32;
+		if (old == new)
+			break;
 		if (old > new)
 			value.u8 = 0x01;
 		else
@@ -4083,6 +4223,7 @@ static struct deviceproptableu16 focusmodes[] = {
 
 	{ N_("AF-A"),		0x8005, PTP_VENDOR_SONY },
 	{ N_("AF-C"),		0x8004, PTP_VENDOR_SONY },
+	{ N_("DMF"),		0x8006, PTP_VENDOR_SONY },
 };
 GENERIC16TABLE(FocusMode,focusmodes)
 
@@ -4164,6 +4305,10 @@ static struct deviceproptableu8 canon_eos_whitebalance[] = {
 	{ N_("Color Temperature"),9, 0 }, /* from eos 40d / 5D Mark II dump */
 	{ "Unknown 10",		10, 0 },
 	{ "Unknown 11",		11, 0 },
+	{ N_("Custom WB 2"),	15, 0 },
+	{ N_("Custom WB 3"),	16, 0 },
+	{ N_("Custom WB 4"),	18, 0 },
+	{ N_("Custom WB 5"),	19, 0 },
 };
 GENERIC8TABLE(Canon_EOS_WhiteBalance,canon_eos_whitebalance)
 
@@ -4201,9 +4346,11 @@ GENERIC8TABLE(Canon_ExpCompensation,canon_expcompensation)
 static struct deviceproptableu8 canon_expcompensation2[] = {
 	{ "5",		0x28, 0 },
 	{ "4.6",	0x25, 0 },
+	{ "4.5",	0x24, 0 },
 	{ "4.3",	0x23, 0 },
 	{ "4",		0x20, 0 },
 	{ "3.6",	0x1d, 0 },
+	{ "3.5",	0x1c, 0 },
 	{ "3.3",	0x1b, 0 },
 	{ "3",		0x18, 0 },
 	{ "2.6",	0x15, 0 },
@@ -4213,6 +4360,7 @@ static struct deviceproptableu8 canon_expcompensation2[] = {
 	{ "1.6",	0x0d, 0 },
 	{ "1.5",	0x0c, 0 },
 	{ "1.3",	0x0b, 0 },
+	{ "1",		0x08, 0 },
 	{ "1.0",	0x08, 0 },
 	{ "0.6",	0x05, 0 },
 	{ "0.5",	0x04, 0 },
@@ -4221,6 +4369,7 @@ static struct deviceproptableu8 canon_expcompensation2[] = {
 	{ "-0.3",	0xfd, 0 },
 	{ "-0.5",	0xfc, 0 },
 	{ "-0.6",	0xfb, 0 },
+	{ "-1",		0xf8, 0 },
 	{ "-1.0",	0xf8, 0 },
 	{ "-1.3",	0xf5, 0 },
 	{ "-1.5",	0xf4, 0 },
@@ -4231,9 +4380,11 @@ static struct deviceproptableu8 canon_expcompensation2[] = {
 	{ "-2.6",	0xeb, 0 },
 	{ "-3",		0xe8, 0 },
 	{ "-3.3",	0xe5, 0 },
+	{ "-3.5",	0xe4, 0 },
 	{ "-3.6",	0xe3, 0 },
 	{ "-4",		0xe0, 0 },
 	{ "-4.3",	0xdd, 0 }, /*Canon EOS 5D Mark III*/
+	{ "-4.5",	0xdc, 0 },
 	{ "-4.6",	0xdb, 0 },
 	{ "-5",		0xd8, 0 },
 };
@@ -4252,6 +4403,7 @@ GENERIC16TABLE(Canon_PhotoEffect,canon_photoeffect)
 
 
 static struct deviceproptableu16 canon_aperture[] = {
+	{ N_("implicit auto"),	0x0, 0 },
 	{ N_("auto"),	0xffff, 0 },
 	{ "1",		0x0008, 0 },
 	{ "1.1",	0x000b, 0 },
@@ -4709,6 +4861,7 @@ static struct deviceproptableu8 compressionsetting[] = {
 
 	{ N_("Standard"),	0x02, PTP_VENDOR_SONY },
 	{ N_("Fine"),		0x03, PTP_VENDOR_SONY },
+	{ N_("Extra Fine"),	0x04, PTP_VENDOR_SONY },
 	{ N_("RAW"),		0x10, PTP_VENDOR_SONY },
 	{ N_("RAW+JPEG"),	0x13, PTP_VENDOR_SONY },
 };
@@ -5779,10 +5932,12 @@ _put_Nikon_ViewFinder(CONFIG_PUT_ARGS) {
 				       _("Nikon enable liveview failed"));
 			/* Has to put the mirror up, so takes a bit. */
 			C_PTP (nikon_wait_busy(params, 50, 1000));
+			params->inliveview = 1;
 		}
 	} else {
 		if (ptp_operation_issupported(params, PTP_OC_NIKON_EndLiveView))
 			C_PTP (ptp_nikon_end_liveview (params));
+		params->inliveview = 0;
 	}
 	return GP_OK;
 }
@@ -6024,7 +6179,7 @@ _put_OpenCapture(CONFIG_PUT_ARGS)
 	CR (gp_widget_get_value(widget, &val));
 	if (val) {
 		C_PTP_REP (ptp_initiateopencapture (params, 0x0, 0x0)); /* so far use only defaults for storage and ofc */
-		params->opencapture_transid = params->transaction_id;
+		params->opencapture_transid = params->transaction_id-1; /* transid will be incremented already */
 	} else {
 		C_PTP_REP (ptp_terminateopencapture (params, params->opencapture_transid));
 	}
@@ -6245,7 +6400,9 @@ _put_CaptureTarget(CONFIG_PUT_ARGS) {
 	}
 	/* Also update it in the live Canon EOS camera. (Nikon and Canon Powershot just use different opcodes.) */
 	if (	(params->deviceinfo.VendorExtensionID == PTP_VENDOR_CANON) &&
-		ptp_operation_issupported(&camera->pl->params, PTP_OC_CANON_EOS_RemoteRelease)
+		(ptp_operation_issupported(params, PTP_OC_CANON_EOS_RemoteRelease) ||
+		 ptp_operation_issupported(params, PTP_OC_CANON_EOS_RemoteReleaseOn)
+		)
 	)
 		CR (camera_canon_eos_update_capture_target( camera, context, -1 ));
 
@@ -7079,7 +7236,7 @@ static struct submenu capture_settings_menu[] = {
 	{ N_("Movie Shutter Speed 2"),          "movieshutterspeed",        PTP_DPC_NIKON_MovieShutterSpeed,        PTP_VENDOR_NIKON,   PTP_DTC_UINT32, _get_Nikon_ShutterSpeed,            _put_Nikon_ShutterSpeed },
 	{ N_("Shutter Speed"),                  "shutterspeed",             PTP_DPC_CANON_EOS_ShutterSpeed,         PTP_VENDOR_CANON,   PTP_DTC_UINT16, _get_Canon_ShutterSpeed,            _put_Canon_ShutterSpeed },
 	{ N_("Shutter Speed"),                  "shutterspeed",             PTP_DPC_FUJI_ShutterSpeed,              PTP_VENDOR_FUJI,    PTP_DTC_INT16,  _get_Fuji_ShutterSpeed,             _put_Fuji_ShutterSpeed },
-	{ N_("Shutter Speed"),                  "shutterspeed",             PTP_DPC_SONY_ShutterSpeed,              PTP_VENDOR_SONY,    PTP_DTC_INT32,  _get_Sony_ShutterSpeed,             _put_Sony_ShutterSpeed },
+	{ N_("Shutter Speed"),                  "shutterspeed",             PTP_DPC_SONY_ShutterSpeed,              PTP_VENDOR_SONY,    PTP_DTC_UINT32,  _get_Sony_ShutterSpeed,             _put_Sony_ShutterSpeed },
 	{ N_("Shutter Speed"),                  "shutterspeed",             PTP_DPC_RICOH_ShutterSpeed,             PTP_VENDOR_PENTAX,  PTP_DTC_UINT64, _get_Ricoh_ShutterSpeed,            _put_Ricoh_ShutterSpeed },
 	{ N_("Metering Mode"),                  "meteringmode",             PTP_DPC_CANON_MeteringMode,             PTP_VENDOR_CANON,   PTP_DTC_UINT8,  _get_Canon_MeteringMode,            _put_Canon_MeteringMode },
 	{ N_("Metering Mode"),                  "meteringmode",             PTP_DPC_CANON_EOS_MeteringMode,         PTP_VENDOR_CANON,   PTP_DTC_UINT8,  _get_Canon_MeteringMode,            _put_Canon_MeteringMode },
@@ -7331,7 +7488,9 @@ _get_config (Camera *camera, const char *confname, CameraWidget **outwidget, Cam
 	memset (&ab, 0, sizeof(ab));
 	gp_camera_get_abilities (camera, &ab);
 	if (	(params->deviceinfo.VendorExtensionID == PTP_VENDOR_CANON) &&
-		ptp_operation_issupported(&camera->pl->params, PTP_OC_CANON_EOS_RemoteRelease)
+		(ptp_operation_issupported(params, PTP_OC_CANON_EOS_RemoteRelease) ||
+		 ptp_operation_issupported(params, PTP_OC_CANON_EOS_RemoteReleaseOn)
+		)
 	) {
 		if (!params->eos_captureenabled)
 			camera_prepare_capture (camera, context);
@@ -7594,6 +7753,7 @@ _get_config (Camera *camera, const char *confname, CameraWidget **outwidget, Cam
 					for (k=dpd.FORM.Range.MinimumValue.val;k<=dpd.FORM.Range.MaximumValue.val;k+=dpd.FORM.Range.StepSize.val) { \
 						sprintf (buf, "%ld", k); 			\
 						gp_widget_add_choice (widget, buf);		\
+						if (dpd.FORM.Range.StepSize.val == 0) break;	\
 					}							\
 				} 								\
 				break;
@@ -7730,7 +7890,9 @@ _set_config (Camera *camera, const char *confname, CameraWidget *window, GPConte
 
 	camera->pl->checkevents = TRUE;
 	if (	(params->deviceinfo.VendorExtensionID == PTP_VENDOR_CANON) &&
-		ptp_operation_issupported(&camera->pl->params, PTP_OC_CANON_EOS_RemoteRelease)
+		(ptp_operation_issupported(params, PTP_OC_CANON_EOS_RemoteRelease) ||
+		 ptp_operation_issupported(params, PTP_OC_CANON_EOS_RemoteReleaseOn)
+		)
 	) {
 		if (!params->eos_captureenabled)
 			camera_prepare_capture (camera, context);

@@ -1,3 +1,4 @@
+
 Camera summary:
 Manufacturer: Sony Corporation
 Model: ILCE-6000
@@ -1072,3 +1073,70 @@ Current: (null)
 0.933298 gphoto2-port(2): Writing 12=0xc byte(s) to port...
 0.933313 gphoto2-port(3): Hexdump of 12 = 0xc bytes follows:
 0000  0c 00 00 00 01 00 09 92-0b 00 00 00              ............    
+Device info:
+Manufacturer: Sony Corporation
+  Model: ILCE-6000
+  device version: 3.0
+  serial number: '0000000000000000nnnnnnnnnnnnnnnn'
+Vendor extension ID: 0x00000011
+Vendor extension version: 100
+Vendor extension description: Sony PTP Extensions
+Functional Mode: 0x0000
+PTP Standard Version: 100
+Supported operations:
+  0x1002 (Open session)
+  0x1003 (Close session)
+  0x1001 (Get device info)
+  0x1004 (Get storage IDs)
+  0x1005 (Get storage info)
+  0x1006 (Get number of objects)
+  0x1007 (Get object handles)
+  0x1008 (Get object info)
+  0x1009 (Get object)
+  0x100a (Get thumbnail)
+  0x101b (Get partial object)
+  0x9201 (PTP_OC_SONY_SDIOConnect)
+  0x9202 (PTP_OC_SONY_GetSDIOGetExtDeviceInfo)
+  0x9205 (PTP_OC_SONY_SetControlDeviceA)
+  0x9207 (PTP_OC_SONY_SetControlDeviceB)
+  0x9209 (PTP_OC_SONY_GetAllDevicePropData)
+Events Supported:
+  0xc201
+  0xc202
+  0xc203
+Device Properties Supported:
+  0x5004
+  0x5005
+  0x5007
+  0x500a
+  0x500b
+  0x500c
+  0x500e
+  0x5010
+  0x5013
+  0xd200
+  0xd201
+  0xd203
+  0xd20d
+  0xd20e
+  0xd20f
+  0xd210
+  0xd21c
+  0xd211
+  0xd213
+  0xd21e
+  0xd21b
+  0xd21d
+  0xd217
+  0xd218
+  0xd219
+  0xd212
+  0xd214
+  0xd215
+  0xd220
+  0xd2c1
+  0xd2c2
+  0xd2c3
+  0xd2c8
+  0xd2c5
+  0xd2c7
