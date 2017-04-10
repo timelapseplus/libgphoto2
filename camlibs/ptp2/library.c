@@ -21,6 +21,10 @@
  * Boston, MA  02110-1301  USA
  */
 
+// This disabled the code that checks and waits for focus to be found, ensuring low-lag capture for time-lapse
+#define DISABLE_AF_CAPTURE
+
+
 #define _DEFAULT_SOURCE
 #include "config.h"
 
@@ -3293,6 +3297,9 @@ camera_canon_eos_capture (Camera *camera, CameraCaptureType type, CameraFilePath
 		int 			manualfocus = 0, foundfocusinfo = 0;
 		PTPDevicePropDesc	dpd;
 
+#ifdef DISABLE_AF_CAPTURE
+		manualfocus = 1;
+#else
 		/* are we in manual focus mode ... value would be 3 */
 		if (PTP_RC_OK == ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_FocusMode, &dpd)) {
 			if ((dpd.DataType == PTP_DTC_UINT16) && (dpd.CurrentValue.u16 == 3)) {
@@ -3301,6 +3308,7 @@ camera_canon_eos_capture (Camera *camera, CameraCaptureType type, CameraFilePath
 				GP_LOG_D("detected manual focus. skipping focus detection logic");
 			}
 		}
+#endif
 		ret = GP_OK;
 		/* half press now - initiate focusing and wait for result */
 		C_PTP_REP_MSG (ptp_canon_eos_remotereleaseon (params, 1, 0), _("Canon EOS Half-Press failed"));
@@ -3824,6 +3832,9 @@ camera_sony_capture (Camera *camera, CameraCaptureType type, CameraFilePath *pat
 
 	GP_LOG_D ("holding down shutterbutton");
 	event_start = time_now();
+#ifdef DISABLE_AF_CAPTURE
+	usleep(50000);
+#else
 	do {
 		/* needed on older cameras like the a58, check for events ... */
 		C_PTP (ptp_check_event (params));
@@ -3849,6 +3860,7 @@ camera_sony_capture (Camera *camera, CameraCaptureType type, CameraFilePath *pat
 		}
 
 	} while (time_since (event_start) < 1000);
+#endif
 	GP_LOG_D ("releasing shutterbutton");
 
 	/* release full-press */
@@ -3906,7 +3918,6 @@ camera_sony_capture (Camera *camera, CameraCaptureType type, CameraFilePath *pat
 	return add_objectid_and_upload (camera, path, context, newobject, &oi);
 }
 
-
 static int
 camera_capture (Camera *camera, CameraCaptureType type, CameraFilePath *path,
 		GPContext *context)
@@ -3946,7 +3957,11 @@ camera_capture (Camera *camera, CameraCaptureType type, CameraFilePath *path,
 		if ((GP_OK != gp_setting_get("ptp2","autofocus",buf)) || !strcmp(buf,"off"))
 			af = 0;
 
+#ifdef DISABLE_AF_CAPTURE
+		return camera_nikon_capture (camera, type, path, 0, sdram, context);
+#else
 		return camera_nikon_capture (camera, type, path, af, sdram, context);
+#endif
 	}
 
 	/* 1st gen, 2nd gen nikon capture only go to SDRAM */
@@ -3961,7 +3976,11 @@ camera_capture (Camera *camera, CameraCaptureType type, CameraFilePath *path,
 		if ((GP_OK != gp_setting_get("ptp2","autofocus",buf)) || !strcmp(buf,"off"))
 			af = 0;
 		if ((GP_OK != gp_setting_get("ptp2","capturetarget",buf)) || !strcmp(buf,"sdram"))
+#ifdef DISABLE_AF_CAPTURE
 			ret = camera_nikon_capture (camera, type, path, af, 1, context);
+#else
+			ret = camera_nikon_capture (camera, type, path, 0, 1, context);
+#endif
 		if (ret != GP_ERROR_NOT_SUPPORTED)
 			 return ret;
 		/* for CARD capture and unsupported combinations, fall through */
@@ -4179,7 +4198,9 @@ camera_trigger_capture (Camera *camera, GPContext *context)
 	if (!strcmp(buf,"sdram"))
 		sdram = 1;
 
+#ifndef DISABLE_AF_CAPTURE
 	if ((GP_OK != gp_setting_get("ptp2","autofocus",buf)) || !strcmp(buf,"off"))
+#endif
 		af = 0;
 
 	GP_LOG_D ("Triggering capture to %s, autofocus=%d", buf, af);
