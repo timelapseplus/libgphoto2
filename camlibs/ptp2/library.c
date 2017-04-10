@@ -3713,6 +3713,7 @@ camera_sony_capture (Camera *camera, CameraCaptureType type, CameraFilePath *pat
 	 * get focus, indicated by the 0xD213 property. But hold it for at most 1 second.
 	 */
 
+#if 0
 	GP_LOG_D ("holding down shutterbutton");
 	event_start = time_now();
 	do {
@@ -3740,6 +3741,9 @@ camera_sony_capture (Camera *camera, CameraCaptureType type, CameraFilePath *pat
 		}
 
 	} while (time_since (event_start) < 1000);
+#endif
+	usleep(100);
+
 	GP_LOG_D ("releasing shutterbutton");
 
 	/* release full-press */
