@@ -1,7 +1,7 @@
 /* ptp.h
  *
  * Copyright (C) 2001 Mariusz Woloszyn <emsi@ipartners.pl>
- * Copyright (C) 2003-2014 Marcus Meissner <marcus@jet.franken.de>
+ * Copyright (C) 2003-2017 Marcus Meissner <marcus@jet.franken.de>
  * Copyright (C) 2006-2008 Linus Walleij <triad@df.lth.se>
  *
  * This library is free software; you can redistribute it and/or
@@ -280,6 +280,7 @@ typedef struct _PTPIPHeader PTPIPHeader;
 #define PTP_OC_CANON_902C			0x902C
 #define PTP_OC_CANON_GetDirectory		0x902D
 #define PTP_OC_CANON_902E			0x902E
+#define PTP_OC_CANON_902F			0x902F	/* used during camera init */
 
 #define PTP_OC_CANON_SetPairingInfo		0x9030
 #define PTP_OC_CANON_GetPairingInfo		0x9031
@@ -408,6 +409,7 @@ typedef struct _PTPIPHeader PTPIPHeader;
 #define PTP_OC_CANON_EOS_SetCTGInfo		0x913C
 #define PTP_OC_CANON_EOS_SetRequestOLCInfoGroup	0x913D
 #define PTP_OC_CANON_EOS_SetRequestRollingPitchingLevel	0x913E
+/* 3 args, 0x21201020, 0x110, 0x1000000 (potentially reverse order) */
 #define PTP_OC_CANON_EOS_GetCameraSupport	0x913F
 #define PTP_OC_CANON_EOS_SetRating		0x9140 /* 2 args */
 #define PTP_OC_CANON_EOS_RequestInnerDevelopStart	0x9141 /* 2 args: 1 type, 1 object? */
@@ -439,6 +441,8 @@ typedef struct _PTPIPHeader PTPIPHeader;
 #define PTP_OC_CANON_EOS_CancelTransfer2	0x91F1
 #define PTP_OC_CANON_EOS_FAPIMessageTX		0x91FE
 #define PTP_OC_CANON_EOS_FAPIMessageRX		0x91FF
+
+/* A1E8 ... also seen? is an error code? */
 
 /* Nikon extension Operation Codes */
 #define PTP_OC_NIKON_GetProfileAllData	0x9006
@@ -2451,6 +2455,7 @@ struct _PTPParams {
 	PTPIOGetResp	getresp_func;
 	PTPIOGetData	getdata_func;
 	PTPIOGetResp	event_check;
+	PTPIOGetResp	event_check_queue;
 	PTPIOGetResp	event_wait;
 	PTPIOCancelReq	cancelreq_func;
 
@@ -2488,6 +2493,10 @@ struct _PTPParams {
 
 	/* PTP: caching time for properties, default 2 */
 	int			cachetime;
+
+	/* PTP: Storage Caching */
+	PTPStorageIDs		storageids;
+	int			storagechanged;
 
 	/* PTP: Device Property Caching */
 	PTPDeviceProperty	*deviceproperties;
@@ -2540,6 +2549,9 @@ struct _PTPParams {
 	uint16_t	response_packet_size;
 };
 
+/* Asynchronous event callback */
+typedef void (*PTPEventCbFn)(PTPParams *params, uint16_t code, PTPContainer *event, void *user_data);
+
 /* last, but not least - ptp functions */
 uint16_t ptp_usb_sendreq	(PTPParams* params, PTPContainer* req, int dataphase);
 uint16_t ptp_usb_senddata	(PTPParams* params, PTPContainer* ptp,
@@ -2547,8 +2559,10 @@ uint16_t ptp_usb_senddata	(PTPParams* params, PTPContainer* ptp,
 uint16_t ptp_usb_getresp	(PTPParams* params, PTPContainer* resp);
 uint16_t ptp_usb_getdata	(PTPParams* params, PTPContainer* ptp, 
 	                         PTPDataHandler *handler);
-uint16_t ptp_usb_event_check	(PTPParams* params, PTPContainer* event);
+uint16_t ptp_usb_event_async	(PTPParams *params, PTPEventCbFn cb, void *user_data);
 uint16_t ptp_usb_event_wait	(PTPParams* params, PTPContainer* event);
+uint16_t ptp_usb_event_check	(PTPParams* params, PTPContainer* event);
+uint16_t ptp_usb_event_check_queue	(PTPParams* params, PTPContainer* event);
 
 uint16_t ptp_usb_control_get_extended_event_data (PTPParams *params, char *buffer, int *size);
 uint16_t ptp_usb_control_device_reset_request (PTPParams *params);
@@ -2565,6 +2579,7 @@ uint16_t ptp_ptpip_getdata	(PTPParams* params, PTPContainer* ptp,
 	                         PTPDataHandler *handler);
 uint16_t ptp_ptpip_event_wait	(PTPParams* params, PTPContainer* event);
 uint16_t ptp_ptpip_event_check	(PTPParams* params, PTPContainer* event);
+uint16_t ptp_ptpip_event_check_queue	(PTPParams* params, PTPContainer* event);
 
 uint16_t ptp_getdeviceinfo	(PTPParams* params, PTPDeviceInfo* deviceinfo);
 
@@ -2711,6 +2726,7 @@ uint16_t ptp_getfilesystemmanifest (PTPParams* params, uint32_t storage,
 
 
 uint16_t ptp_check_event (PTPParams *params);
+uint16_t ptp_check_event_queue (PTPParams *params);
 uint16_t ptp_wait_event (PTPParams *params);
 uint16_t ptp_add_event (PTPParams *params, PTPContainer *evt);
 int ptp_get_one_event (PTPParams *params, PTPContainer *evt);

@@ -2,6 +2,7 @@
  *
  * Copyright (C) 2001-2004 Mariusz Woloszyn <emsi@ipartners.pl>
  * Copyright (C) 2003-2016 Marcus Meissner <marcus@jet.franken.de>
+ * Copyright (C) 2003-2017 Marcus Meissner <marcus@jet.franken.de>
  * Copyright (C) 2006-2007 Linus Walleij <triad@df.lth.se>
  *
  * This library is free software; you can redistribute it and/or
@@ -492,6 +493,7 @@ ptp_usb_getresp (PTPParams* params, PTPContainer* resp)
 /* PTP Events wait for or check mode */
 #define PTP_EVENT_CHECK			0x0000	/* waits for */
 #define PTP_EVENT_CHECK_FAST		0x0001	/* checks */
+#define PTP_EVENT_CHECK_QUEUE		0x0002	/* just looks in the queue */
 
 static inline uint16_t
 ptp_usb_event (PTPParams* params, PTPContainer* event, int wait)
@@ -523,11 +525,18 @@ ptp_usb_event (PTPParams* params, PTPContainer* event, int wait)
 		if (result <= 0) result = gp_port_check_int (camera->port, (char*)&usbevent, sizeof(usbevent));
 		gp_port_set_timeout (camera->port, timeout);
 		break;
+	case PTP_EVENT_CHECK_QUEUE:
+		gp_port_get_timeout (camera->port, &timeout);
+		gp_port_set_timeout (camera->port, 0); /* indicates no waiting at all */
+		result = gp_port_check_int (camera->port, (char*)&usbevent, sizeof(usbevent));
+		gp_port_set_timeout (camera->port, timeout);
+		break;
 	default:
 		return PTP_ERROR_BADPARAM;
 	}
 	if (result < 0) {
-		GP_LOG_E ("Reading PTP event failed: %s (%d)", gp_port_result_as_string(result), result);
+		if ((result != GP_ERROR_TIMEOUT) || (wait != PTP_EVENT_CHECK_FAST))
+			GP_LOG_E ("Reading PTP event failed: %s (%d)", gp_port_result_as_string(result), result);
 		if (result == GP_ERROR_TIMEOUT)
 			return PTP_ERROR_TIMEOUT;
 		return PTP_ERROR_IO;
@@ -569,6 +578,12 @@ ptp_usb_event (PTPParams* params, PTPContainer* event, int wait)
 	event->Param2 = dtoh32(usbevent.param2);
 	event->Param3 = dtoh32(usbevent.param3);
 	return PTP_RC_OK;
+}
+
+uint16_t
+ptp_usb_event_check_queue (PTPParams* params, PTPContainer* event) {
+
+	return ptp_usb_event (params, event, PTP_EVENT_CHECK_QUEUE);
 }
 
 uint16_t

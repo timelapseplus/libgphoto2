@@ -1,7 +1,7 @@
 /* ptp-pack.c
  *
  * Copyright (C) 2001-2004 Mariusz Woloszyn <emsi@ipartners.pl>
- * Copyright (C) 2003-2016 Marcus Meissner <marcus@jet.franken.de>
+ * Copyright (C) 2003-2017 Marcus Meissner <marcus@jet.franken.de>
  * Copyright (C) 2006-2008 Linus Walleij <triad@df.lth.se>
  * Copyright (C) 2007 Tero Saarni <tero.saarni@gmail.com>
  * Copyright (C) 2009 Axel Waggershauser <awagger@web.de>
@@ -1342,8 +1342,11 @@ ptp_unpack_OPL (PTPParams *params, unsigned char* data, MTPProperties **pprops, 
 	MTPProperties *props = NULL;
 	unsigned int offset = 0, i;
 
-	if (prop_count == 0) {
-		*pprops = NULL;
+	*pprops = NULL;
+	if (prop_count == 0)
+		return 0;
+	if (prop_count >= INT_MAX/sizeof(MTPProperties)) {
+		ptp_debug (params ,"prop_count %d is too large", prop_count);
 		return 0;
 	}
 	ptp_debug (params ,"Unpacking MTP OPL, size %d (prop_count %d)", len, prop_count);
@@ -1354,7 +1357,7 @@ ptp_unpack_OPL (PTPParams *params, unsigned char* data, MTPProperties **pprops, 
 	for (i = 0; i < prop_count; i++) {
 		if (len <= 0) {
 			ptp_debug (params ,"short MTP Object Property List at property %d (of %d)", i, prop_count);
-			ptp_debug (params ,"device probably needs DEVICE_FLAG_BROKEN_MTPGETOBJPROPLIST_ALL", i);
+			ptp_debug (params ,"device probably needs DEVICE_FLAG_BROKEN_MTPGETOBJPROPLIST_ALL");
 			ptp_debug (params ,"or even DEVICE_FLAG_BROKEN_MTPGETOBJPROPLIST", i);
 			qsort (props, i, sizeof(MTPProperties),_compare_func);
 			*pprops = props;
@@ -1373,7 +1376,12 @@ ptp_unpack_OPL (PTPParams *params, unsigned char* data, MTPProperties **pprops, 
 		len -= sizeof(uint16_t);
 
 		offset = 0;
-		ptp_unpack_DPV(params, data, &offset, len, &props[i].propval, props[i].datatype);
+		if (!ptp_unpack_DPV(params, data, &offset, len, &props[i].propval, props[i].datatype)) {
+			ptp_debug (params ,"unpacking DPV of property %d encountered insufficient buffer. attack?", i);
+			qsort (props, i, sizeof(MTPProperties),_compare_func);
+			*pprops = props;
+			return i;
+		}
 		data += offset;
 		len -= offset;
 	}
@@ -1667,21 +1675,29 @@ ptp_unpack_EOS_FocusInfoEx (PTPParams* params, unsigned char** data, uint32_t da
 	uint32_t maxlen;
 	char	*str, *p;
 
-	if ((size >= datasize) || (size < 20)) {
-		return strdup("bad size");
-	}
+	if ((size >= datasize) || (size < 20))
+		return strdup("bad size 1");
 	/* every focuspoint gets 4 (16 bit number possible "-" sign and a x) and a ,*/
 	/* inital things around lets say 100 chars at most. 
 	 * FIXME: check selected when we decode it
 	 */
+	if (size < focus_points_in_struct*8) {
+		ptp_error(params, "focus_points_in_struct %d is too large vs size %d", focus_points_in_struct, size);
+		return strdup("bad size 2");
+	}
+	if (focus_points_in_use > focus_points_in_struct) {
+		ptp_error(params, "focus_points_in_use %d is larger than focus_points_in_struct %d", focus_points_in_use, focus_points_in_struct);
+		return strdup("bad size 3");
+	}
+
 	maxlen = focus_points_in_use*32 + 100 + (size - focus_points_in_struct*8)*2;
 	if (halfsize != size-4) {
 		ptp_error(params, "halfsize %d is not expected %d", halfsize, size-4);
-		return strdup("bad size");
+		return strdup("bad size 4");
 	}
 	if (20 + focus_points_in_struct*8 + (focus_points_in_struct+7)/8 > size) {
 		ptp_error(params, "size %d is too large for fp in struct %d", focus_points_in_struct*8 + 20 + (focus_points_in_struct+7)/8, size);
-		return strdup("bad size 2");
+		return strdup("bad size 5");
 	}
 #if 0
 	ptp_debug(params,"d1d3 content:");
@@ -1711,7 +1727,7 @@ ptp_unpack_EOS_FocusInfoEx (PTPParams* params, unsigned char** data, uint32_t da
 	}
 	p += sprintf(p,"},select={");
 	for (i=0;i<focus_points_in_use;i++) {
-		if ((1<<(i%7)) & ((*data)[focus_points_in_struct*8+20+i/8]))
+		if ((1<<(i%8)) & ((*data)[focus_points_in_struct*8+20+i/8]))
 			p+=sprintf(p,"%d,", i);
 	}
 
@@ -1847,18 +1863,25 @@ ptp_unpack_CANON_changes (PTPParams *params, unsigned char* data, int datasize, 
 			ptp_debug (params, "size %d is larger than datasize %d", size, datasize);
 			break;
 		}
+		if (size < 8) {
+			ptp_debug (params, "size %d is smaller than 8.", size);
+			break;
+		}
 		if ((size == 8) && (type == 0))
 			break;
-		if (curdata - data + size >= datasize) {
+		if ((curdata - data) + size >= datasize) {
 			ptp_debug (params, "canon eos event decoder ran over supplied data, skipping entries");
 			break;
 		}
 		if (type == PTP_EC_CANON_EOS_OLCInfoChanged) {
 			unsigned int j;
 
-			for (j=0;j<31;j++)
-				if (dtoh32a(curdata+12) & (1<<j))
-					entries++;
+			entries++;
+			if (size >= 12+2) {
+				for (j=0;j<31;j++)
+					if (dtoh16a(curdata+12) & (1<<j))
+						entries++;
+			}
 		}
 		curdata += size;
 		entries++;
@@ -1879,6 +1902,10 @@ ptp_unpack_CANON_changes (PTPParams *params, unsigned char* data, int datasize, 
 			ptp_debug (params, "size %d is smaller than 8", size);
 			break;
 		}
+
+		if ((size == 8) && (type == 0))
+			break;
+
 		if ((curdata - data) + size >= datasize) {
 			ptp_debug (params, "canon eos event decoder ran over supplied data, skipping entries");
 			break;
@@ -2113,6 +2140,7 @@ ptp_unpack_CANON_changes (PTPParams *params, unsigned char* data, int datasize, 
 				case PTP_DPC_CANON_EOS_StroboFiring:
 				case PTP_DPC_CANON_EOS_AFSelectFocusArea:
 				case PTP_DPC_CANON_EOS_ContinousAFMode:
+				case PTP_DPC_CANON_EOS_MirrorUpSetting:
 					dpd->DataType = PTP_DTC_UINT32;
 					break;
 				/* enumeration for AEM is never provided, but is available to set */
@@ -2314,10 +2342,17 @@ ptp_unpack_CANON_changes (PTPParams *params, unsigned char* data, int datasize, 
 			len = dtoh32a(curdata+8);
 			if ((len != size-8) && (len != size-4)) {
 				ce[i].type = PTP_CANON_EOS_CHANGES_TYPE_UNKNOWN;
+				ce[i].u.info = strdup("OLC size unexpected");
 				ptp_debug (params, "event %d: OLC unexpected size %d for blob len %d (not -4 nor -8)", i, size, len);
 				break;
 			}
 			mask = dtoh16a(curdata+8+4);
+			if (size < 14) {
+				ce[i].type = PTP_CANON_EOS_CHANGES_TYPE_UNKNOWN;
+				ce[i].u.info = strdup("OLC size too small");
+				ptp_debug (params, "event %d: OLC unexpected size %d", i, size);
+				break;
+			}
 			curoff = 8+4+4;
 			if (mask & CANON_EOS_OLC_BUTTON) {
 				ce[i].type = PTP_CANON_EOS_CHANGES_TYPE_UNKNOWN;
@@ -2562,9 +2597,10 @@ ptp_unpack_CANON_changes (PTPParams *params, unsigned char* data, int datasize, 
 			break;
 		}
 		curdata += size;
-		if ((size == 8) && (type == 0))
-			break;
 		i++;
+		if (i >= entries) {
+			ptp_debug (params, "BAD: i %d, entries %d", i, entries);
+		}
 	}
 	if (!i) {
 		free (ce);

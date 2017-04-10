@@ -1,7 +1,7 @@
 /* ptp.c
  *
  * Copyright (C) 2001-2004 Mariusz Woloszyn <emsi@ipartners.pl>
- * Copyright (C) 2003-2016 Marcus Meissner <marcus@jet.franken.de>
+ * Copyright (C) 2003-2017 Marcus Meissner <marcus@jet.franken.de>
  * Copyright (C) 2006-2008 Linus Walleij <triad@df.lth.se>
  * Copyright (C) 2007 Tero Saarni <tero.saarni@gmail.com>
  * Copyright (C) 2009 Axel Waggershauser <awagger@web.de>
@@ -1128,6 +1128,7 @@ ptp_free_params (PTPParams *params)
 	for (i=0;i<params->nrofobjects;i++)
 		ptp_free_object (&params->objects[i]);
 	free (params->objects);
+	free (params->storageids.Storage);
 	free (params->events);
 	for (i=0;i<params->nrofcanon_props;i++) {
 		free (params->canon_props[i].data);
@@ -1219,6 +1220,9 @@ ptp_getobjecthandles (PTPParams* params, uint32_t storage,
 	uint16_t	ret;
 	unsigned char	*data;
 	unsigned int	size;
+
+	objecthandles->Handler = NULL;
+	objecthandles->n = 0;
 
 	PTP_CNT_INIT(ptp, PTP_OC_GetObjectHandles, storage, objectformatcode, associationOH);
 	ret=ptp_transaction(params, &ptp, PTP_DP_GETDATA, 0, &data, &size);
@@ -2149,9 +2153,51 @@ handle_event_internal (PTPParams *params, PTPContainer *event)
 			}
 		break;
 	}
+	case PTP_EC_StoreAdded:
+	case PTP_EC_StoreRemoved: {
+		int i;
+
+		/* refetch storage IDs and also invalidate whole object tree */
+		free (params->storageids.Storage);
+		params->storageids.Storage	= NULL;
+		params->storageids.n 		= 0;
+		ptp_getstorageids (params, &params->storageids);
+
+		/* free object storage as it might be associated with the storage ids */
+		/* FIXME: enhance and just delete the ones from the storage */
+		for (i=0;i<params->nrofobjects;i++)
+			ptp_free_object (&params->objects[i]);
+		free (params->objects);
+		params->objects 		= NULL;
+		params->nrofobjects 		= 0;
+
+		params->storagechanged		= 1;
+		break;
+	}
 	default: /* check if we should handle it internally too */
 		break;
 	}
+}
+
+uint16_t
+ptp_check_event_queue (PTPParams *params)
+{
+	PTPContainer	event;
+	uint16_t	ret;
+
+	/* We try to do a event check without I/O */
+	/* Basically this means just looking at the meanwhile queued events */
+
+	ret = params->event_check_queue(params,&event);
+
+	if (ret == PTP_RC_OK) {
+		ptp_debug (params, "event: nparams=0x%X, code=0x%X, trans_id=0x%X, p1=0x%X, p2=0x%X, p3=0x%X", event.Nparam,event.Code,event.Transaction_ID, event.Param1, event.Param2, event.Param3);
+		ptp_add_event (params, &event);
+		handle_event_internal (params, &event);
+	}
+	if (ret == PTP_ERROR_TIMEOUT) /* ok, just new events */
+		ret = PTP_RC_OK;
+	return ret;
 }
 
 uint16_t
@@ -2244,22 +2290,7 @@ ptp_wait_event (PTPParams *params)
 		ptp_debug (params, "event: nparams=0x%X, code=0x%X, trans_id=0x%X, p1=0x%X, p2=0x%X, p3=0x%X", event.Nparam,event.Code,event.Transaction_ID, event.Param1, event.Param2, event.Param3);
 		ptp_add_event (params, &event);
 
-		/* handle some PTP stack internal events */
-		switch (event.Code) {
-		case PTP_EC_DevicePropChanged: {
-			unsigned int i;
-
-			/* mark the property for a forced refresh on the next query */
-			for (i=0;i<params->nrofdeviceproperties;i++)
-				if (params->deviceproperties[i].desc.DevicePropertyCode == event.Param1) {
-					params->deviceproperties[i].timestamp = 0;
-					break;
-				}
-			break;
-		}
-		default: /* check if we should handle it internally too */
-			break;
-		}
+		handle_event_internal (params, &event);
 	}
 	if (ret == PTP_ERROR_TIMEOUT) /* ok, just new events */
 		ret = PTP_RC_OK;
@@ -2707,23 +2738,36 @@ ptp_canon_getobjectinfo (PTPParams* params, uint32_t store, uint32_t p2,
 	PTPContainer	ptp;
 	uint16_t	ret;
 	unsigned char	*data;
-	unsigned int	i;
+	unsigned int	i, size;
 	
+	*entnum = 0;
+	*entries = NULL;
 	PTP_CNT_INIT(ptp, PTP_OC_CANON_GetObjectInfoEx, store, p2, parent, handle);
+	data = NULL;
+	size = 0;
 	ret=ptp_transaction(params, &ptp, PTP_DP_GETDATA, 0, &data, NULL);
 	if (ret != PTP_RC_OK)
 		goto exit;
-
-	*entnum=ptp.Param1;
-	*entries=calloc(*entnum, sizeof(PTPCANONFolderEntry));
-	if (*entries==NULL) {
-		ret=PTP_RC_GeneralError;
+	if (!data)
+		return ret;
+	if (ptp.Param1 > size/PTP_CANON_FolderEntryLen) {
+		ptp_debug (params, "param1 is %d, size is only %d", ptp.Param1, size);
+		ret = PTP_RC_GeneralError;
 		goto exit;
 	}
-	for(i=0; i<(*entnum); i++)
+
+	*entnum = ptp.Param1;
+	*entries= calloc(*entnum, sizeof(PTPCANONFolderEntry));
+	if (*entries == NULL) {
+		ret = PTP_RC_GeneralError;
+		goto exit;
+	}
+	for(i=0; i<(*entnum); i++) {
+		if (size < i*PTP_CANON_FolderEntryLen) break;
 		ptp_unpack_Canon_FE(params,
 				    data+i*PTP_CANON_FolderEntryLen,
 				    &((*entries)[i]) );
+	}
 
 exit:
 	free (data);
@@ -3981,6 +4025,10 @@ ptp_chdk_read_script_msg(PTPParams* params, ptp_chdk_script_msg **msg)
 
 	/* camera will always send data, otherwise getdata will cause problems */
 	CHECK_PTP_RC(ptp_transaction(params, &ptp, PTP_DP_GETDATA, 0, &data, NULL));
+	if (!data) {
+		ptp_error(params,"no data received");
+		return PTP_ERROR_BADPARAM;
+	}
 
 	/* for convenience, always allocate an extra byte and null it*/
 	*msg = malloc(sizeof(ptp_chdk_script_msg) + ptp.Param4 + 1);
@@ -4048,7 +4096,8 @@ ptp_android_getpartialobject64 (PTPParams* params, uint32_t handle, uint64_t off
 {
 	PTPContainer ptp;
 
-	PTP_CNT_INIT(ptp, PTP_OC_ANDROID_GetPartialObject64, handle, offset & 0xFFFFFFFF, offset >> 32, maxbytes);
+	/* casts due to varargs otherwise pushing 64bit values on the stack */
+	PTP_CNT_INIT(ptp, PTP_OC_ANDROID_GetPartialObject64, handle, ((uint32_t)offset & 0xFFFFFFFF), (uint32_t)(offset >> 32), maxbytes);
 	return ptp_transaction(params, &ptp, PTP_DP_GETDATA, 0, object, len);
 }
 
@@ -4059,7 +4108,7 @@ ptp_android_sendpartialobject (PTPParams* params, uint32_t handle, uint64_t offs
 	PTPContainer	ptp;
 	uint16_t	ret;
 
-	PTP_CNT_INIT(ptp, PTP_OC_ANDROID_SendPartialObject, handle, offset & 0xFFFFFFFF, offset >> 32, len);
+	PTP_CNT_INIT(ptp, PTP_OC_ANDROID_SendPartialObject, handle, (uint32_t)(offset & 0xFFFFFFFF), (uint32_t)(offset >> 32), len);
 
 	/*
 	 * MtpServer.cpp is buggy: it uses write() without offset
@@ -5836,6 +5885,14 @@ ptp_render_ofc(PTPParams* params, uint16_t ofc, int spaceleft, char *txt)
 			switch (ofc) {
 			case PTP_OFC_CANON_CRW:
 				return snprintf (txt, spaceleft,"CRW");
+			default:
+				break;
+			}
+			break;
+		case PTP_VENDOR_SONY:
+			switch (ofc) {
+			case PTP_OFC_SONY_RAW:
+				return snprintf (txt, spaceleft,"ARW");
 			default:
 				break;
 			}
