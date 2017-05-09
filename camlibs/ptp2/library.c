@@ -922,8 +922,8 @@ static struct {
 	/* https://github.com/gphoto/libgphoto2/issues/70 */
 	{"Sony:Alpha-A6300 (Control)",0x054c, 0x079c, PTP_CAP|PTP_CAP_PREVIEW},
 
-	/* Andre Crone <andre@elysia.nl>, adjusted */
-	{"Sony:Alpha-A7S II (Control)",0x054c,0x0a71, PTP_CAP},
+	/* Anja Stock at SUSE */
+	{"Sony:DSC-RX10M3 (Control)",  	0x054c, 0x079d, PTP_CAP|PTP_CAP_PREVIEW},
 
 	/* https://sourceforge.net/p/libmtp/bugs/1310/ */
 	{"Sony:DSC-HX60V (MTP)",      0x054c, 0x08ad, 0},
@@ -943,7 +943,8 @@ static struct {
 	/* https://sourceforge.net/p/gphoto/feature-requests/442/ */
 	{"Sony:Alpha-A7r (Control)",  0x054c, 0x094d, PTP_CAP|PTP_CAP_PREVIEW},
 
-	{"Sony:Alpha-A6000 (Control)",0x054c, 0x094e, PTP_CAP|PTP_CAP_PREVIEW},
+	/* preview was confirmed not to work. */
+	{"Sony:Alpha-A6000 (Control)",0x054c, 0x094e, PTP_CAP},
 
 	/* Nick Clarke <nick.clarke@gmail.com> */
 	{"Sony:Alpha-A77 M2 (Control)",0x054c, 0x0953, PTP_CAP|PTP_CAP_PREVIEW},
@@ -958,10 +959,13 @@ static struct {
 	{"Sony:ILCE-7M2 (Control)",   0x054c, 0x0a6a, PTP_CAP|PTP_CAP_PREVIEW},
 
 	/* Andre Crone, andre@elysia.nl */
-	{"Sony:Alpha-A7r II (Control)",  0x054c, 0x0a6b, PTP_CAP|PTP_CAP_PREVIEW},
+	{"Sony:Alpha-A7r II (Control)",	0x054c, 0x0a6b, PTP_CAP|PTP_CAP_PREVIEW},
 
 	/* Andre Crone <andre@elysia.nl> */
-	{"Sony:DSC-RX100M4",          0x054c, 0x0a6d, 0},
+	{"Sony:DSC-RX100M4",          	0x054c, 0x0a6d, 0},
+
+	/* Andre Crone <andre@elysia.nl>, adjusted */
+	{"Sony:Alpha-A7S II (Control)",0x054c,0x0a71, PTP_CAP},
 
 	/* Nikon Coolpix 2500: M. Meissner, 05 Oct 2003 */
 	{"Nikon:Coolpix 2500 (PTP mode)", 0x04b0, 0x0109, 0},
@@ -1873,7 +1877,7 @@ static struct {
 	/* Andre Crone <andre@elysia.nl */
 	{"Canon:EOS 5DS",			0x04a9, 0x3295, PTP_CAP|PTP_CAP_PREVIEW},
 	/* Nykhedimus S <nykhedimus@gmail.com> */
-	{"Canon:EOS M3",			0x04a9, 0x3299, PTPBUG_DELETE_SENDS_EVENT},
+	{"Canon:EOS M3",			0x04a9, 0x3299, PTPBUG_DELETE_SENDS_EVENT|PTP_CAP|PTP_CAP_PREVIEW},
 	/* Shaul Badusa <shaulikoo@gmail.com> */
 	{"Canon:PowerShot SX60HS",		0x04a9, 0x329a, PTPBUG_DELETE_SENDS_EVENT},
 	/* pravsripad@gmail.com */
@@ -1902,6 +1906,9 @@ static struct {
 
 	/* https://github.com/gphoto/libgphoto2/issues/84 */
 	{"Canon:Digital Ixus 180",		0x04a9, 0x32c0, 0},
+
+	/* Daniel Muller, jednatel SourcePaint s.r.o. <dan@sourcepaint.cz> */
+	{"Canon:EOS 77D",			0x04a9, 0x32cb, PTP_CAP|PTP_CAP_PREVIEW},
 
 	/* Konica-Minolta PTP cameras */
 	{"Konica-Minolta:DiMAGE A2 (PTP mode)",        0x132b, 0x0001, 0},
@@ -2642,7 +2649,7 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 						continue;
 					case 9:
 					case 1:
-                    case 11:
+					case 11:
 						if (len > (size-(xdata-data))) {
 							len = size;
 							GP_LOG_E ("len=%d larger than rest size %ld", len, (size-(xdata-data)));
@@ -2651,7 +2658,7 @@ camera_capture_preview (Camera *camera, CameraFile *file, GPContext *context)
 						gp_file_append ( file, (char*)xdata+8, len-8 );
 						/* type 1 is JPEG (regular), type 9 is in movie mode */
 
-						gp_file_set_mime_type (file, (type==1) ? GP_MIME_JPEG : GP_MIME_RAW);
+						gp_file_set_mime_type (file, ((type == 1) || (type == 11)) ? GP_MIME_JPEG : GP_MIME_RAW);
 
 						/* Add an arbitrary file name so caller won't crash */
 						gp_file_set_name (file, "preview.jpg");
@@ -2814,6 +2821,7 @@ enable_liveview:
 		unsigned char	*ximage = NULL;
 		int		tries = 20;
 
+		ptp_check_event (params);	/* will stall for some reason */
 		do {
 			ret = ptp_getobject_with_size(params, preview_object, &ximage, &size);
 			if (ret == PTP_RC_OK)
@@ -3288,73 +3296,82 @@ camera_canon_eos_capture (Camera *camera, CameraCaptureType type, CameraFilePath
 	capture_start = time_now();
 
 	if (ptp_operation_issupported(params, PTP_OC_CANON_EOS_RemoteReleaseOn)) {
-		struct timeval		focus_start;
-		int 			manualfocus = 0, foundfocusinfo = 0;
-		PTPDevicePropDesc	dpd;
+		if (!is_canon_eos_m (params)) {
+			/* Regular EOS */
+			struct timeval		focus_start;
+			int 			manualfocus = 0, foundfocusinfo = 0;
+			PTPDevicePropDesc	dpd;
 
-		/* are we in manual focus mode ... value would be 3 */
-		if (PTP_RC_OK == ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_FocusMode, &dpd)) {
-			if ((dpd.DataType == PTP_DTC_UINT16) && (dpd.CurrentValue.u16 == 3)) {
-				manualfocus = 1;
-				/* will do 1 pass through the focusing loop for good measure */
-				GP_LOG_D("detected manual focus. skipping focus detection logic");
-			}
-		}
-		ret = GP_OK;
-		/* half press now - initiate focusing and wait for result */
-		C_PTP_REP_MSG (ptp_canon_eos_remotereleaseon (params, 1, 0), _("Canon EOS Half-Press failed"));
-
-		focus_start = time_now();
-		do {
-			int foundevents = 0;
-
-			C_PTP_REP_MSG (ptp_check_eos_events (params), _("Canon EOS Get Changes failed"));
-			while (ptp_get_one_eos_event (params, &entry)) {
-				foundevents = 1;
-				GP_LOG_D("focusing - read event type %d", entry.type);
-				if (entry.type == PTP_CANON_EOS_CHANGES_TYPE_FOCUSINFO) {
-					GP_LOG_D("focusinfo content: %s", entry.u.info);
-					foundfocusinfo = 1;
-					if (strstr(entry.u.info,"0000200")) {
-						gp_context_error (context, _("Canon EOS Capture failed to release: Perhaps no focus?"));
-						ret = GP_ERROR;
-					}
+			/* are we in manual focus mode ... value would be 3 */
+			if (PTP_RC_OK == ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_FocusMode, &dpd)) {
+				if ((dpd.DataType == PTP_DTC_UINT16) && (dpd.CurrentValue.u16 == 3)) {
+					manualfocus = 1;
+					/* will do 1 pass through the focusing loop for good measure */
+					GP_LOG_D("detected manual focus. skipping focus detection logic");
 				}
-				if (	(entry.type == PTP_CANON_EOS_CHANGES_TYPE_PROPERTY) &&
-					(entry.u.propid == PTP_DPC_CANON_EOS_FocusInfoEx)
-				) {
-					if (PTP_RC_OK == ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_FocusInfoEx, &dpd)) {
-						GP_LOG_D("focusinfo prop content: %s", dpd.CurrentValue.str);
+			}
+			ret = GP_OK;
+			/* half press now - initiate focusing and wait for result */
+			C_PTP_REP_MSG (ptp_canon_eos_remotereleaseon (params, 1, 0), _("Canon EOS Half-Press failed"));
+
+			focus_start = time_now();
+			do {
+				int foundevents = 0;
+
+				C_PTP_REP_MSG (ptp_check_eos_events (params), _("Canon EOS Get Changes failed"));
+				while (ptp_get_one_eos_event (params, &entry)) {
+					foundevents = 1;
+					GP_LOG_D("focusing - read event type %d", entry.type);
+					if (entry.type == PTP_CANON_EOS_CHANGES_TYPE_FOCUSINFO) {
+						GP_LOG_D("focusinfo content: %s", entry.u.info);
 						foundfocusinfo = 1;
-						/* FIXME: detect no focus? */
+						if (strstr(entry.u.info,"0000200")) {
+							gp_context_error (context, _("Canon EOS Capture failed to release: Perhaps no focus?"));
+							ret = GP_ERROR;
+						}
+					}
+					if (	(entry.type == PTP_CANON_EOS_CHANGES_TYPE_PROPERTY) &&
+						(entry.u.propid == PTP_DPC_CANON_EOS_FocusInfoEx)
+					) {
+						if (PTP_RC_OK == ptp_canon_eos_getdevicepropdesc (params, PTP_DPC_CANON_EOS_FocusInfoEx, &dpd)) {
+							GP_LOG_D("focusinfo prop content: %s", dpd.CurrentValue.str);
+							foundfocusinfo = 1;
+							/* FIXME: detect no focus? */
+						}
 					}
 				}
+				/* We found focus information, so half way pressing has finished! */
+				if (foundfocusinfo)
+					break;
+				/* for manual focus, at least wait until we get events */
+				if (manualfocus && foundevents)
+					break;
+			} while (waiting_for_timeout (&back_off_wait, focus_start, 2*1000)); /* wait 2 seconds for focus */
+
+			if (!foundfocusinfo && !manualfocus) {
+				GP_LOG_E("no focus info?\n");
 			}
-			/* We found focus information, so half way pressing has finished! */
-			if (foundfocusinfo)
-				break;
-			/* for manual focus, at least wait until we get events */
-			if (manualfocus && foundevents)
-				break;
-		} while (waiting_for_timeout (&back_off_wait, focus_start, 2*1000)); /* wait 2 seconds for focus */
+			if (ret != GP_OK) {
+				C_PTP_REP_MSG (ptp_canon_eos_remotereleaseoff (params, 1), _("Canon EOS Half-Release failed"));
+				return ret;
+			}
+			/* full press now */
 
-		if (!foundfocusinfo && !manualfocus) {
-			GP_LOG_E("no focus info?\n");
-		}
-		if (ret != GP_OK) {
+			C_PTP_REP_MSG (ptp_canon_eos_remotereleaseon (params, 2, 0), _("Canon EOS Full-Press failed"));
+			/* no event check between */
+			/* full release now */
+			C_PTP_REP_MSG (ptp_canon_eos_remotereleaseoff (params, 2), _("Canon EOS Full-Release failed"));
+			ptp_check_eos_events (params);
+
+			/* half release now */
 			C_PTP_REP_MSG (ptp_canon_eos_remotereleaseoff (params, 1), _("Canon EOS Half-Release failed"));
-			return ret;
+		} else {
+			/* Canon EOS M series */
+			C_PTP_REP_MSG (ptp_canon_eos_remotereleaseon (params, 3, 0), _("Canon EOS M Full-Press failed"));
+			/* full release now */
+			C_PTP_REP_MSG (ptp_canon_eos_remotereleaseoff (params, 3), _("Canon EOS M Full-Release failed"));
+			ptp_check_eos_events (params);
 		}
-		/* full press now */
-
-		C_PTP_REP_MSG (ptp_canon_eos_remotereleaseon (params, 2, 0), _("Canon EOS Full-Press failed"));
-		/* no event check between */
-		/* full release now */
-		C_PTP_REP_MSG (ptp_canon_eos_remotereleaseoff (params, 2), _("Canon EOS Full-Release failed"));
-		ptp_check_eos_events (params);
-
-		/* half release now */
-		C_PTP_REP_MSG (ptp_canon_eos_remotereleaseoff (params, 1), _("Canon EOS Half-Release failed"));
 	} else {
 		C_PTP_REP_MSG (ptp_canon_eos_capture (params, &result),
 			       _("Canon EOS Capture failed"));
@@ -4166,12 +4183,13 @@ out:
 static int
 camera_trigger_capture (Camera *camera, GPContext *context)
 {
-	PTPParams *params = &camera->pl->params;
+	PTPParams	*params = &camera->pl->params;
 	uint16_t	ret;
-	char buf[1024];
-	int sdram = 0;
-	int af = 1;
+	char		buf[1024];
+	int		sdram = 0;
+	int		af = 1;
 
+	GP_LOG_D ("camera_trigger_capture");
 
 	SET_CONTEXT_P(params, context);
 
@@ -4314,46 +4332,54 @@ camera_trigger_capture (Camera *camera, GPContext *context)
 			return GP_ERROR_CAMERA_BUSY;
 
 		ret = GP_OK;
-		/* half press now - initiate focusing and wait for result */
-		C_PTP_REP_MSG (ptp_canon_eos_remotereleaseon (params, 1, 0), _("Canon EOS Half-Press failed"));
 
-		do {
-			PTPCanon_changes_entry	entry;
-			int foundfocusinfo = 0;
+		if (!is_canon_eos_m(params)) {
+			/* half press now - initiate focusing and wait for result */
+			C_PTP_REP_MSG (ptp_canon_eos_remotereleaseon (params, 1, 0), _("Canon EOS Half-Press failed"));
 
-			C_PTP_REP_MSG (ptp_check_eos_events (params),
-			       _("Canon EOS Get Changes failed"));
-			oneloop = 0;
-			while (ptp_get_one_eos_event (params, &entry)) {
-				oneloop = 1;
-				GP_LOG_D("focusing - read event type %d", entry.type);
-				if (entry.type == PTP_CANON_EOS_CHANGES_TYPE_FOCUSINFO) {
-					GP_LOG_D("focusinfo content: %s", entry.u.info);
-					foundfocusinfo = 1;
-					if (strstr(entry.u.info,"0000200")) {
-						gp_context_error (context, _("Canon EOS Capture failed to release: Perhaps no focus?"));
-						ret = GP_ERROR;
+			do {
+				PTPCanon_changes_entry	entry;
+				int foundfocusinfo = 0;
+
+				C_PTP_REP_MSG (ptp_check_eos_events (params),
+				       _("Canon EOS Get Changes failed"));
+				oneloop = 0;
+				while (ptp_get_one_eos_event (params, &entry)) {
+					oneloop = 1;
+					GP_LOG_D("focusing - read event type %d", entry.type);
+					if (entry.type == PTP_CANON_EOS_CHANGES_TYPE_FOCUSINFO) {
+						GP_LOG_D("focusinfo content: %s", entry.u.info);
+						foundfocusinfo = 1;
+						if (strstr(entry.u.info,"0000200")) {
+							gp_context_error (context, _("Canon EOS Capture failed to release: Perhaps no focus?"));
+							ret = GP_ERROR;
+						}
 					}
 				}
+				if (foundfocusinfo)
+					break;
+			} while (oneloop);
+
+			if (ret != GP_OK) {
+				C_PTP_REP_MSG (ptp_canon_eos_remotereleaseoff (params, 1), _("Canon EOS Half-Release failed"));
+				return ret;
 			}
-			if (foundfocusinfo)
-				break;
-		} while (oneloop);
+			/* full press now */
 
-		if (ret != GP_OK) {
+			C_PTP_REP_MSG (ptp_canon_eos_remotereleaseon (params, 2, 0), _("Canon EOS Full-Press failed"));
+			/* no event check between */
+			/* full release now */
+			C_PTP_REP_MSG (ptp_canon_eos_remotereleaseoff (params, 2), _("Canon EOS Full-Release failed"));
+			ptp_check_eos_events (params);
+
+			/* half release now */
 			C_PTP_REP_MSG (ptp_canon_eos_remotereleaseoff (params, 1), _("Canon EOS Half-Release failed"));
-			return ret;
+		} else {
+			C_PTP_REP_MSG (ptp_canon_eos_remotereleaseon (params, 3, 0), _("Canon EOS M Full-Press failed"));
+			/* full release now */
+			C_PTP_REP_MSG (ptp_canon_eos_remotereleaseoff (params, 3), _("Canon EOS M Full-Release failed"));
+			ptp_check_eos_events (params);
 		}
-		/* full press now */
-
-		C_PTP_REP_MSG (ptp_canon_eos_remotereleaseon (params, 2, 0), _("Canon EOS Full-Press failed"));
-		/* no event check between */
-		/* full release now */
-		C_PTP_REP_MSG (ptp_canon_eos_remotereleaseoff (params, 2), _("Canon EOS Full-Release failed"));
-		ptp_check_eos_events (params);
-
-		/* half release now */
-		C_PTP_REP_MSG (ptp_canon_eos_remotereleaseoff (params, 1), _("Canon EOS Half-Release failed"));
 
 		return GP_OK;
 	}
@@ -7459,6 +7485,7 @@ ptp_list_folder_eos (PTPParams *params, uint32_t storage, uint32_t handle) {
 
 	for (k=0;k<storageids.n;k++) {
 		GP_LOG_D ("reading handle %08x directory of 0x%08x", storageids.Storage[k], handle);
+		tmp = NULL;
 		ret = LOG_ON_PTP_E (ptp_canon_eos_getobjectinfoex (
 					  params, storageids.Storage[k], handle ? handle : 0xffffffff, 0x100000, &tmp, &nroftmp));
 		if (ret != PTP_RC_OK) {
@@ -7924,8 +7951,13 @@ camera_init (Camera *camera, GPContext *context)
 		)
 			return chdk_init (camera, context);
 
-		if (ptp_operation_issupported(params, PTP_OC_CANON_EOS_SetRemoteMode))
-			C_PTP (ptp_canon_eos_setremotemode(params, 1));
+		if (ptp_operation_issupported(params, PTP_OC_CANON_EOS_SetRemoteMode)) {
+			if (is_canon_eos_m(params)) {
+				C_PTP (ptp_canon_eos_setremotemode(params, 0x15));
+			} else {
+				C_PTP (ptp_canon_eos_setremotemode(params, 1));
+			}
+		}
 		break;
 	case PTP_VENDOR_NIKON:
 		if (ptp_operation_issupported(params, PTP_OC_NIKON_CurveDownload))

@@ -69,6 +69,57 @@
 
 #define SET_CONTEXT(camera, ctx) ((PTPData *) camera->pl->params.data)->context = ctx
 
+int
+have_prop(Camera *camera, uint16_t vendor, uint16_t prop) {
+	unsigned int i;
+
+	/* prop 0 matches */
+	if (!prop && (camera->pl->params.deviceinfo.VendorExtensionID==vendor))
+		return 1;
+
+	if (	((prop & 0x7000) == 0x5000) ||
+		(NIKON_1(&camera->pl->params) && ((prop & 0xf000) == 0xf000))
+	) { /* properties */
+		for (i=0; i<camera->pl->params.deviceinfo.DevicePropertiesSupported_len; i++) {
+			if (prop != camera->pl->params.deviceinfo.DevicePropertiesSupported[i])
+				continue;
+			if ((prop & 0xf000) == 0x5000) { /* generic property */
+				if (!vendor || (camera->pl->params.deviceinfo.VendorExtensionID==vendor))
+					return 1;
+			}
+			if (camera->pl->params.deviceinfo.VendorExtensionID==vendor)
+				return 1;
+		}
+	}
+	if ((prop & 0x7000) == 0x1000) { /* commands */
+		for (i=0; i<camera->pl->params.deviceinfo.OperationsSupported_len; i++) {
+			if (prop != camera->pl->params.deviceinfo.OperationsSupported[i])
+				continue;
+			if ((prop & 0xf000) == 0x1000) /* generic property */
+				return 1;
+			if (camera->pl->params.deviceinfo.VendorExtensionID==vendor)
+				return 1;
+		}
+	}
+	return 0;
+}
+
+static int
+have_eos_prop(Camera *camera, uint16_t vendor, uint16_t prop) {
+	unsigned int i;
+
+	/* The special Canon EOS property set gets special treatment. */
+	if ((camera->pl->params.deviceinfo.VendorExtensionID != PTP_VENDOR_CANON) ||
+	    (vendor != PTP_VENDOR_CANON)
+	)
+		return 0;
+	for (i=0;i<camera->pl->params.nrofcanon_props;i++)
+		if (camera->pl->params.canon_props[i].proptype == prop)
+			return 1;
+	return 0;
+}
+
+
 static int
 camera_prepare_chdk_capture(Camera *camera, GPContext *context) {
 	PTPParams		*params = &camera->pl->params;
@@ -270,6 +321,10 @@ camera_canon_eos_update_capture_target(Camera *camera, GPContext *context, int v
 	int			cardval = -1;
 
 	memset(&dpd,0,sizeof(dpd));
+	if (!have_eos_prop(camera, PTP_VENDOR_CANON, PTP_DPC_CANON_EOS_CaptureDestination) ) {
+		GP_LOG_D ("No CaptureDestination property?");
+		return GP_OK;
+	}
 	C_PTP (ptp_canon_eos_getdevicepropdesc (params,PTP_DPC_CANON_EOS_CaptureDestination, &dpd));
 
 	/* Look for the correct value of the card mode */
@@ -356,7 +411,6 @@ camera_prepare_canon_eos_capture(Camera *camera, GPContext *context) {
 		LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_Artist));
 		LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_Copyright));
 		LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_SerialNumber));
-		LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_ShutterCounter));
 
 /*		LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_DPOFVersion)); */
 /*		LOG_ON_PTP_E (ptp_canon_eos_requestdevicepropvalue (params, PTP_DPC_CANON_EOS_MyMenuList)); */
@@ -398,6 +452,22 @@ camera_prepare_canon_eos_capture(Camera *camera, GPContext *context) {
 	/* Get the second bulk set of 0x9116 property data */
 	C_PTP (ptp_check_eos_events (params));
 	params->eos_captureenabled = 1;
+
+	if (is_canon_eos_m (params)) {
+		PTPPropertyValue    ct_val;
+
+		GP_LOG_D ("EOS M detected");
+
+		C_PTP (ptp_canon_eos_seteventmode(params, 2));
+		ct_val.u16 = 0x0008;
+		C_PTP (ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &ct_val, PTP_DTC_UINT16));
+
+#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+		usleep(1000*1000); /* 1 second */
+#endif
+
+		C_PTP (ptp_check_eos_events (params));
+	}
 	return GP_OK;
 }
 
@@ -467,6 +537,13 @@ camera_unprepare_canon_eos_capture(Camera *camera, GPContext *context) {
 	/* just in case we had autofocus running */
 	CR (ptp_canon_eos_afcancel(params));
 
+	if (is_canon_eos_m (params)) {
+		PTPPropertyValue    ct_val;
+
+		ct_val.u16 = 0x0000;
+		C_PTP (ptp_canon_eos_setdevicepropvalue (params, PTP_DPC_CANON_EOS_EVFOutputDevice, &ct_val, PTP_DTC_UINT16));
+	}
+
 	/* then emits 911b and 911c ... not done yet ... */
 	CR (camera_canon_eos_update_capture_target(camera, context, 1));
 
@@ -524,56 +601,6 @@ nikon_wait_busy(PTPParams *params, int waitms, int timeout) {
 		if (waitms) usleep(waitms*1000)/*wait a bit*/;
 	} while (tries--);
 	return res;
-}
-
-int
-have_prop(Camera *camera, uint16_t vendor, uint16_t prop) {
-	unsigned int i;
-
-	/* prop 0 matches */
-	if (!prop && (camera->pl->params.deviceinfo.VendorExtensionID==vendor))
-		return 1;
-
-	if (	((prop & 0x7000) == 0x5000) ||
-		(NIKON_1(&camera->pl->params) && ((prop & 0xf000) == 0xf000))
-	) { /* properties */
-		for (i=0; i<camera->pl->params.deviceinfo.DevicePropertiesSupported_len; i++) {
-			if (prop != camera->pl->params.deviceinfo.DevicePropertiesSupported[i])
-				continue;
-			if ((prop & 0xf000) == 0x5000) { /* generic property */
-				if (!vendor || (camera->pl->params.deviceinfo.VendorExtensionID==vendor))
-					return 1;
-			}
-			if (camera->pl->params.deviceinfo.VendorExtensionID==vendor)
-				return 1;
-		}
-	}
-	if ((prop & 0x7000) == 0x1000) { /* commands */
-		for (i=0; i<camera->pl->params.deviceinfo.OperationsSupported_len; i++) {
-			if (prop != camera->pl->params.deviceinfo.OperationsSupported[i])
-				continue;
-			if ((prop & 0xf000) == 0x1000) /* generic property */
-				return 1;
-			if (camera->pl->params.deviceinfo.VendorExtensionID==vendor)
-				return 1;
-		}
-	}
-	return 0;
-}
-
-static int
-have_eos_prop(Camera *camera, uint16_t vendor, uint16_t prop) {
-	unsigned int i;
-
-	/* The special Canon EOS property set gets special treatment. */
-	if ((camera->pl->params.deviceinfo.VendorExtensionID != PTP_VENDOR_CANON) ||
-	    (vendor != PTP_VENDOR_CANON)
-	)
-		return 0;
-	for (i=0;i<camera->pl->params.nrofcanon_props;i++)
-		if (camera->pl->params.canon_props[i].proptype == prop)
-			return 1;
-	return 0;
 }
 
 struct submenu;
@@ -2170,6 +2197,11 @@ static struct deviceproptableu8 sony_aspectratio[] = {
 };
 GENERIC8TABLE(Sony_AspectRatio,sony_aspectratio)
 
+static struct deviceproptableu16 canon_eos_aspectratio[] = {
+	/* FIXME: fill */
+};
+GENERIC16TABLE(Canon_EOS_AspectRatio,canon_eos_aspectratio)
+
 /* actually in 1/10s of a second, but only 3 values in use */
 static struct deviceproptableu16 canon_selftimer[] = {
 	{ N_("Not used"),	0,	0 },
@@ -3755,7 +3787,7 @@ _put_Ricoh_ShutterSpeed(CONFIG_PUT_ARGS) {
 			return GP_ERROR;
 		y = 1;
 	}
-	propval->u64 = ((unsigned long)x<<32) | y;
+	propval->u64 = ((uint64_t)x<<32) | y;
 	return GP_OK;
 }
 
@@ -7009,7 +7041,7 @@ static struct submenu camera_actions_menu[] = {
 	{ N_("Capture"),                        "capture",          PTP_DPC_SONY_Capture,   PTP_VENDOR_SONY,   PTP_DTC_UINT16,  _get_Sony_Capture,              _put_Sony_Capture },
 	{ N_("Power Down"),                     "powerdown",        0,  0,                  PTP_OC_PowerDown,                   _get_PowerDown,                 _put_PowerDown },
 	{ N_("Focus Lock"),                     "focuslock",        0,  PTP_VENDOR_CANON,   PTP_OC_CANON_FocusLock,             _get_Canon_FocusLock,           _put_Canon_FocusLock },
-	{ N_("Bulb Mode"),                      "bulb",             0xd2c1,  PTP_VENDOR_SONY,   0,                              _get_Sony_Bulb,                 _put_Sony_Bulb },
+	{ N_("Bulb Mode"),                      "bulb",             PTP_DPC_SONY_StillImage,PTP_VENDOR_SONY,   0,               _get_Sony_Bulb,                 _put_Sony_Bulb },
 	{ N_("Bulb Mode"),                      "bulb",             0,  PTP_VENDOR_CANON,   PTP_OC_CANON_EOS_BulbStart,         _get_Canon_EOS_Bulb,            _put_Canon_EOS_Bulb },
 	{ N_("Bulb Mode"),                      "bulb",             0,  PTP_VENDOR_NIKON,   PTP_OC_NIKON_TerminateCapture,      _get_Nikon_Bulb,                _put_Nikon_Bulb },
 	{ N_("UI Lock"),                        "uilock",           0,  PTP_VENDOR_CANON,   PTP_OC_CANON_EOS_SetUILock,         _get_Canon_EOS_UILock,          _put_Canon_EOS_UILock },
@@ -7209,6 +7241,7 @@ static struct submenu capture_settings_menu[] = {
 	{ N_("Exposure Program"),               "expprogram2",              PTP_DPC_NIKON_1_Mode,                   PTP_VENDOR_NIKON,   PTP_DTC_UINT8,  _get_NIKON_1_ExposureProgram,       _put_NIKON_1_ExposureProgram },
 	{ N_("Scene Mode"),                     "scenemode",                PTP_DPC_NIKON_SceneMode,                PTP_VENDOR_NIKON,   PTP_DTC_UINT8,  _get_NIKON_SceneMode,               _put_NIKON_SceneMode },
 	{ N_("Aspect Ratio"),                   "aspectratio",              PTP_DPC_SONY_AspectRatio,               PTP_VENDOR_SONY,    PTP_DTC_UINT8,  _get_Sony_AspectRatio,              _put_Sony_AspectRatio },
+	{ N_("Aspect Ratio"),                   "aspectratio",              PTP_DPC_CANON_EOS_MultiAspect,          PTP_VENDOR_CANON,   PTP_DTC_UINT32,  _get_Canon_EOS_AspectRatio,        _put_Canon_EOS_AspectRatio },
 	
 	{ N_("HDR Mode"),                       "hdrmode",                  PTP_DPC_NIKON_HDRMode,                  PTP_VENDOR_NIKON,   PTP_DTC_UINT8,  _get_Nikon_OnOff_UINT8,             _put_Nikon_OnOff_UINT8 },
 	{ N_("HDR High Dynamic"),               "hdrhighdynamic",           PTP_DPC_NIKON_HDRHighDynamic,           PTP_VENDOR_NIKON,   PTP_DTC_UINT8,  _get_Nikon_HDRHighDynamic,          _put_Nikon_HDRHighDynamic },

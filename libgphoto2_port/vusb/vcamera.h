@@ -59,6 +59,10 @@ typedef struct vcamera {
 	unsigned int	session;
 	ptpcontainer	ptpcmd;
 
+	int		exposurebias;
+	unsigned int	shutterspeed;
+	unsigned int	fnumber;
+
 	int		fuzzmode;
 #define FUZZMODE_PROTOCOL	0
 #define FUZZMODE_NORMAL		1
