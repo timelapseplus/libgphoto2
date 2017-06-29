@@ -4093,7 +4093,6 @@ downloadfile:
 	return GP_ERROR;
 }
 
->>>>>>> upstream/master
 static int
 camera_capture (Camera *camera, CameraCaptureType type, CameraFilePath *path,
 		GPContext *context)
