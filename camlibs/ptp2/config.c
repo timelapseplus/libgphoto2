@@ -478,19 +478,19 @@ camera_prepare_capture (Camera *camera, GPContext *context)
 	
 	GP_LOG_D ("prepare_capture");
 	switch (params->deviceinfo.VendorExtensionID) {
-	case PTP_VENDOR_FUJI:	{
-		PTPPropertyValue	propval;
+	case PTP_VENDOR_FUJI:
+		{
+			PTPPropertyValue propval;
 
-		if (!have_prop(camera, PTP_VENDOR_FUJI, 0xd207))
-			break;
-		if (!have_prop(camera, PTP_VENDOR_FUJI, 0xd208))
-			break;
-		propval.u16 = 0x0002;
-		C_PTP_REP (ptp_setdevicepropvalue (params, 0xd207, &propval, PTP_DTC_UINT16));
-		propval.u16 = 0x0200;
-		C_PTP_REP (ptp_setdevicepropvalue (params, 0xd208, &propval, PTP_DTC_UINT16));
+			/* without the firmware update ... not an error... */
+			if (!have_prop (camera, PTP_VENDOR_FUJI, 0xd207))
+				return GP_OK;
+
+			propval.u16 = 0x0002;
+			C_PTP (ptp_setdevicepropvalue (params, 0xd207, &propval, PTP_DTC_UINT16));
+			return GP_OK;
+		}
 		break;
-	}
 	case PTP_VENDOR_CANON:
 		if (ptp_operation_issupported(params, PTP_OC_CANON_InitiateReleaseControl))
 			return camera_prepare_canon_powershot_capture(camera,context);
@@ -577,6 +577,16 @@ camera_unprepare_capture (Camera *camera, GPContext *context)
 		gp_context_error(context,
 		_("Sorry, your Canon camera does not support Canon capture"));
 		return GP_ERROR_NOT_SUPPORTED;
+	case PTP_VENDOR_FUJI:
+		{
+			PTPPropertyValue propval;
+			PTPParams *params = &camera->pl->params;
+
+			propval.u16 = 0x0001;
+			C_PTP (ptp_setdevicepropvalue (params, 0xd207, &propval, PTP_DTC_UINT16));
+			return GP_OK;
+		}
+		break;
 	default:
 		/* generic capture does not need unpreparation */
 		return GP_OK;
@@ -1599,7 +1609,7 @@ _put_ImageSize(CONFIG_PUT_ARGS) {
 static int
 _get_ExpCompensation(CONFIG_GET_ARGS) {
 	int j;
-	char buf[10];
+	char buf[13];
 
 	if (!(dpd->FormFlag & PTP_DPFF_Enumeration))
 		return GP_ERROR;
@@ -2885,9 +2895,6 @@ _get_Sharpness(CONFIG_GET_ARGS) {
 				((dpd->DataType == PTP_DTC_INT8)  && (dpd->CurrentValue.i8 == i))
 			)
 				gp_widget_set_value (*widget, buf);
-
-			/* malicious device might report stepsize 0 ... but lets do 1 cycle through the loop */
-			if (s == 0) break;
 		}
 	}
 
@@ -7704,7 +7711,7 @@ _get_config (Camera *camera, const char *confname, CameraWidget **outwidget, Cam
 
 	for (i=0;i<params->deviceinfo.DevicePropertiesSupported_len;i++) {
 		uint16_t		propid = params->deviceinfo.DevicePropertiesSupported[i];
-		char			buf[20], *label;
+		char			buf[21], *label;
 		PTPDevicePropDesc	dpd;
 		CameraWidgetType	type;
 
@@ -7987,6 +7994,8 @@ _set_config (Camera *camera, const char *confname, CameraWidget *window, GPConte
 					PTPDevicePropDesc dpd;
 
 					memset(&dpd,0,sizeof(dpd));
+					memset(&propval,0,sizeof(propval));
+
 					C_PTP (ptp_generic_getdevicepropdesc(params,cursub->propid,&dpd));
 					if (cursub->type != dpd.DataType) {
 						GP_LOG_E ("Type of property '%s' expected: 0x%04x got: 0x%04x", cursub->label, cursub->type, dpd.DataType );
@@ -8010,8 +8019,8 @@ _set_config (Camera *camera, const char *confname, CameraWidget *window, GPConte
 									  _(cursub->label), cursub->propid, ret_ptp, _(ptp_strerror(ret_ptp, params->deviceinfo.VendorExtensionID)));
 							ret = translate_ptp_result (ret_ptp);
 						}
+						ptp_free_devicepropvalue (cursub->type, &propval);
 					}
-					ptp_free_devicepropvalue (cursub->type, &propval);
 					ptp_free_devicepropdesc(&dpd);
 				} else {
 					ret = cursub->putfunc (camera, widget, NULL, NULL);

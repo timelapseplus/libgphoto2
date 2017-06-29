@@ -929,6 +929,9 @@ static struct {
 	/* Anja Stock at SUSE */
 	{"Sony:DSC-RX10M3 (Control)",  	0x054c, 0x079d, PTP_CAP|PTP_CAP_PREVIEW},
 
+	/* https://sourceforge.net/p/libmtp/support-requests/246/ */
+	{"Sony:DSC-HX400V (MTP)",      0x054c, 0x08ac, 0},
+
 	/* https://sourceforge.net/p/libmtp/bugs/1310/ */
 	{"Sony:DSC-HX60V (MTP)",      0x054c, 0x08ad, 0},
 
@@ -948,19 +951,22 @@ static struct {
 	{"Sony:Alpha-A7r (Control)",  0x054c, 0x094d, PTP_CAP|PTP_CAP_PREVIEW},
 
 	/* preview was confirmed not to work. */
-	{"Sony:Alpha-A6000 (Control)",0x054c, 0x094e, PTP_CAP},
+	{"Sony:Alpha-A6000 (Control)",  0x054c, 0x094e, PTP_CAP},
 
 	/* Nick Clarke <nick.clarke@gmail.com> */
-	{"Sony:Alpha-A77 M2 (Control)",0x054c, 0x0953, PTP_CAP|PTP_CAP_PREVIEW},
+	{"Sony:Alpha-A77 M2 (Control)", 0x054c, 0x0953, PTP_CAP|PTP_CAP_PREVIEW},
 
 	/* Markus Oertel */
-	{"Sony:Alpha-A5100 (Control)",0x054c, 0x0957, PTP_CAP|PTP_CAP_PREVIEW},
+	{"Sony:Alpha-A5100 (Control)",  0x054c, 0x0957, PTP_CAP|PTP_CAP_PREVIEW},
 
 	/* http://sourceforge.net/p/gphoto/feature-requests/456/ */
-	{"Sony:Alpha-A7S (Control)",  0x054c, 0x0954, PTP_CAP|PTP_CAP_PREVIEW},
+	{"Sony:Alpha-A7S (Control)",    0x054c, 0x0954, PTP_CAP|PTP_CAP_PREVIEW},
+
+	/* https://sourceforge.net/p/gphoto/feature-requests/472/ */
+	{"Sony:DSC-HX90V (MTP)",        0x054c, 0x09e8, 0},
 
 	/* titan232@gmail.com */
-	{"Sony:ILCE-7M2 (Control)",   0x054c, 0x0a6a, PTP_CAP|PTP_CAP_PREVIEW},
+	{"Sony:ILCE-7M2 (Control)",     0x054c, 0x0a6a, PTP_CAP|PTP_CAP_PREVIEW},
 
 	/* Andre Crone, andre@elysia.nl */
 	{"Sony:Alpha-A7r II (Control)",	0x054c, 0x0a6b, PTP_CAP|PTP_CAP_PREVIEW},
@@ -970,6 +976,9 @@ static struct {
 
 	/* Andre Crone <andre@elysia.nl>, adjusted */
 	{"Sony:Alpha-A7S II (Control)",0x054c,0x0a71, PTP_CAP},
+
+	/* Demo7up <demo7up@gmail.com> */
+	{"Sony:UMC-R10C",		0x054c,0x0a79, 0},
 
 	/* Nikon Coolpix 2500: M. Meissner, 05 Oct 2003 */
 	{"Nikon:Coolpix 2500 (PTP mode)", 0x04b0, 0x0109, 0},
@@ -1319,8 +1328,14 @@ static struct {
 	/* Andre Crone <andre@elysia.nl> */
 	{"Nikon:DSC D810A",               0x04b0, 0x043b, PTP_CAP|PTP_CAP_PREVIEW},
 
+	/* bob@360degreeviews.com */
+	{"Nikon:DSC D500",                0x04b0, 0x043c, PTP_CAP|PTP_CAP_PREVIEW},
+
 	/* Chris P <cpeace@gmail.com> */
 	{"Nikon:DSC D3400",               0x04b0, 0x043d, PTP_CAP|PTP_CAP_PREVIEW},
+
+	/* Phil Stephenson <filstephenson@gmail.com> */
+	{"Nikon:DSC D5600",               0x04b0, 0x043f, PTP_CAP|PTP_CAP_PREVIEW},
 
 	/* http://sourceforge.net/tracker/?func=detail&aid=3536904&group_id=8874&atid=108874 */
 	{"Nikon:V1",    		  0x04b0, 0x0601, PTP_CAP|PTP_NIKON_1},
@@ -2017,6 +2032,11 @@ static struct {
 	/* with new updated firmware 1.1 */
 	{"Fuji:Fujifilm X-T2",			0x04cb, 0x02cd, PTP_CAP},
 
+	/* https://github.com/gphoto/libgphoto2/issues/133 */
+	{"Fuji:GFX 50 S",			0x04cb, 0x02d3, 0},
+	/* https://github.com/gphoto/libgphoto2/issues/170 */
+	{"Fuji:Fujifilm X-T20",			0x04cb, 0x02d4, 0},
+
 	{"Ricoh:Caplio R5 (PTP mode)",          0x05ca, 0x0110, 0},
 	{"Ricoh:Caplio GX (PTP mode)",          0x05ca, 0x0325, 0},
 	{"Sea & Sea:5000G (PTP mode)",		0x05ca, 0x0327, 0},
@@ -2463,6 +2483,9 @@ camera_exit (Camera *camera, GPContext *context)
 			if (ptp_operation_issupported(params, 0x9280)) {
 				C_PTP (ptp_sony_9280(params, 0x4,0,5,0,0,0,0));
 			}
+			break;
+		case PTP_VENDOR_FUJI:
+			CR (camera_unprepare_capture (camera, context));
 			break;
 		}
 
@@ -3939,6 +3962,139 @@ camera_sony_capture (Camera *camera, CameraCaptureType type, CameraFilePath *pat
 }
 
 static int
+camera_fuji_capture (Camera *camera, CameraCaptureType type, CameraFilePath *path, GPContext *context)
+{
+	PTPParams		*params = &camera->pl->params;
+	PTPPropertyValue	propval;
+	PTPObjectHandles	handles, beforehandles;
+	int			tries;
+	uint32_t		newobject;
+#if 0
+	PTPContainer		event;
+	struct timeval		event_start;
+	int			back_off_wait = 0;
+#endif
+
+	GP_LOG_D ("camera_fuji_capture");
+
+	C_PTP (ptp_getobjecthandles (params, PTP_HANDLER_SPECIAL, 0x000000, 0x000000, &beforehandles));
+
+	/* focus */
+	propval.u16 = 0x0200;
+	C_PTP_REP (ptp_setdevicepropvalue (params, 0xd208, &propval, PTP_DTC_UINT16));
+	C_PTP_REP(ptp_initiatecapture(params, 0x00000000, 0x00000000));
+
+	/* poll camera until it is ready */
+	propval.u16 = 0x0001;
+	while (propval.u16 == 0x0001) {
+		ptp_getdevicepropvalue (params, 0xd209, &propval, PTP_DTC_UINT16);
+		GP_LOG_D ("XXX Ready to shoot? %X", propval.u16);
+	}
+
+	/* shoot */
+	propval.u16 = 0x0304;
+	C_PTP_REP (ptp_setdevicepropvalue (params, 0xd208, &propval, PTP_DTC_UINT16));
+	C_PTP_REP(ptp_initiatecapture(params, 0x00000000, 0x00000000));
+
+	/* poll camera until it is ready */
+	propval.u16 = 0x0000;
+	while (propval.u16 == 0x0000) {
+		C_PTP_REP (ptp_getdevicepropvalue (params, 0xd212, &propval, PTP_DTC_UINT64));
+		GP_LOG_D ("XXX Ready after shooting? %lx", propval.u64);
+		C_PTP_REP (ptp_check_event (params));
+	}
+
+#if 0
+	/* FIXME: Marcus ... I need to review this when I get hands on a camera ... the objecthandles loop needs to go */
+	/* Reporter in https://github.com/gphoto/libgphoto2/issues/133 says only 1 event ever is sent, so this does not work */
+	/* there is a ObjectAdded event being sent */
+	do {
+		C_PTP_REP (ptp_check_event (params));
+
+		while (ptp_get_one_event(params, &event)) {
+			switch (event.Code) {
+			case PTP_EC_ObjectAdded:
+				newobject = event.Param1;
+				goto downloadfile;
+			default:
+				GP_LOG_D ("unexpected unhandled event Code %04x, Param 1 %08x", event.Code, event.Param1);
+				break;
+			}
+		}
+	}  while (waiting_for_timeout (&back_off_wait, event_start, 500)); /* wait for 0.5 seconds after busy is no longer signaled */
+
+	/* If we got no event seconds duplicate the nikon broken capture, as we do not know how to get events yet */
+#endif
+
+	tries = 5;
+	GP_LOG_D ("XXXX missing fuji objectadded events workaround");
+	while (tries--) {
+		unsigned int i;
+		uint16_t ret = ptp_getobjecthandles (params, PTP_HANDLER_SPECIAL, 0x000000, 0x000000, &handles);
+		if (ret != PTP_RC_OK)
+			break;
+
+		/* if (handles.n == params->handles.n)
+		 *	continue;
+		 * While this is a potential optimization, lets skip it for now.
+		 */
+		newobject = 0;
+		for (i=0;i<handles.n;i++) {
+			unsigned int 	j;
+			PTPObject	*ob;
+
+			/* look if we saw the objecthandle before capture */
+			for (j=0;j<beforehandles.n;j++)
+				if (beforehandles.Handler[j] == handles.Handler[i])
+					break;
+			if (j != beforehandles.n)
+				continue;
+
+			ret = ptp_object_want (params, handles.Handler[i], PTPOBJECT_OBJECTINFO_LOADED, &ob);
+			if (ret != PTP_RC_OK) {
+				GP_LOG_E ("object added, but not found?");
+				continue;
+			}
+			/* A directory was added, like initial DCIM/100NIKON or so. */
+			if (ob->oi.ObjectFormat == PTP_OFC_Association)
+				continue;
+			newobject = handles.Handler[i];
+			/* we found a new file */
+			break;
+		}
+		free (handles.Handler);
+		if (newobject)
+			break;
+		C_PTP_REP (ptp_check_event (params));
+		sleep(1);
+	}
+	free (beforehandles.Handler);
+	if (!newobject)
+		GP_LOG_D ("fuji object added no new file found after 5 seconds?!?");
+
+#if 0
+downloadfile:
+#endif
+	/* clear path, so we get defined results even without object info */
+	path->name[0]='\0';
+	path->folder[0]='\0';
+
+	if (newobject != 0) {
+		PTPObject	*ob;
+
+		C_PTP_REP (ptp_object_want (params, newobject, PTPOBJECT_OBJECTINFO_LOADED, &ob));
+		strcpy  (path->name,  ob->oi.Filename);
+		sprintf (path->folder,"/"STORAGE_FOLDER_PREFIX"%08lx/",(unsigned long)ob->oi.StorageID);
+		get_folder_from_handle (camera, ob->oi.StorageID, ob->oi.ParentObject, path->folder);
+		/* delete last / or we get confused later. */
+		path->folder[ strlen(path->folder)-1 ] = '\0';
+		return gp_filesystem_append (camera->fs, path->folder, path->name, context);
+	}
+	return GP_ERROR;
+}
+
+>>>>>>> upstream/master
+static int
 camera_capture (Camera *camera, CameraCaptureType type, CameraFilePath *path,
 		GPContext *context)
 {
@@ -3997,9 +4153,9 @@ camera_capture (Camera *camera, CameraCaptureType type, CameraFilePath *path,
 			af = 0;
 		if ((GP_OK != gp_setting_get("ptp2","capturetarget",buf)) || !strcmp(buf,"sdram"))
 #ifdef DISABLE_AF_CAPTURE
-			ret = camera_nikon_capture (camera, type, path, af, 1, context);
-#else
 			ret = camera_nikon_capture (camera, type, path, 0, 1, context);
+#else
+			ret = camera_nikon_capture (camera, type, path, af, 1, context);
 #endif
 		if (ret != GP_ERROR_NOT_SUPPORTED)
 			 return ret;
@@ -4028,6 +4184,13 @@ camera_capture (Camera *camera, CameraCaptureType type, CameraFilePath *path,
 	) {
 		return camera_sony_capture (camera, type, path, context);
 	}
+
+	if (	(params->deviceinfo.VendorExtensionID == PTP_VENDOR_FUJI) &&
+		ptp_operation_issupported(params, PTP_OC_InitiateCapture)
+	) {
+		return camera_fuji_capture (camera, type, path, context);
+	}
+
 
 	if (!ptp_operation_issupported(params,PTP_OC_InitiateCapture)) {
 		gp_context_error(context,
@@ -4592,6 +4755,33 @@ camera_trigger_capture (Camera *camera, GPContext *context)
 		C_PTP (ptp_sony_setdevicecontrolvalueb (params, PTP_DPC_SONY_AutoFocus, &propval, PTP_DTC_UINT16));
 
 		return GP_OK;
+	}
+	if (	(params->deviceinfo.VendorExtensionID == PTP_VENDOR_FUJI) &&
+		ptp_operation_issupported(params, PTP_OC_InitiateCapture)
+	) {
+		PTPPropertyValue	propval;
+
+		/* focus */
+		propval.u16 = 0x0200;
+		C_PTP_REP (ptp_setdevicepropvalue (params, 0xd208, &propval, PTP_DTC_UINT16));
+		C_PTP_REP(ptp_initiatecapture(params, 0x00000000, 0x00000000));
+
+		/* poll camera until it is ready */
+		propval.u16 = 0x0001;
+		while (propval.u16 == 0x0001) {
+			C_PTP_REP (ptp_getdevicepropvalue (params, 0xd209, &propval, PTP_DTC_UINT16));
+		}
+
+		/* shoot */
+		propval.u16 = 0x0304;
+		C_PTP_REP (ptp_setdevicepropvalue (params, 0xd208, &propval, PTP_DTC_UINT16));
+		C_PTP_REP(ptp_initiatecapture(params, 0x00000000, 0x00000000));
+
+		/* poll camera until it is ready */
+		propval.u16 = 0x0000;
+		while (propval.u16 == 0x0000) {
+			C_PTP_REP (ptp_getdevicepropvalue (params, 0xd212, &propval, PTP_DTC_UINT64));
+		}
 	}
 
 #if 0
